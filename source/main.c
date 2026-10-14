@@ -94,9 +94,11 @@ static void tick_play(u32 down, u32 held) {
 	emu_set_keys(input_gba_keys(held));
 
 	if (g_app.raDelay > 0 && --g_app.raDelay == 0) {
+		video_log("ra: hash + load");
 		size_t sz = 0;
 		const uint8_t* rom = emu_rom_data(&sz);
 		ra_load_game(g_app.romPath, rom, sz);
+		video_log("ra: request sent");
 	}
 
 	int frames = g_app.fastForward ? 3 : 1;

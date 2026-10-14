@@ -5,6 +5,7 @@
 #include "emu.h"
 #include "fs.h"
 #include "ra.h"
+#include "video.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -60,6 +61,7 @@ static void load_rom_at(int index) {
 	if (index < 0 || index >= s_romCount) return;
 	app_set_status("Loading %s...", s_roms[index].name);
 	ui_draw();
+	video_log("ui: load start");
 	if (!emu_load(s_roms[index].path)) {
 		app_set_status("Load failed");
 		return;
