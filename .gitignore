@@ -1,0 +1,10 @@
+build/
+*.elf
+*.3dsx
+*.smdh
+*.cia
+*.map
+*.lst
+third_party/mgba/
+third_party/prefix/
+.DS_Store
