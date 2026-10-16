@@ -2,7 +2,6 @@
 #include "app.h"
 #include "audio.h"
 #include "fs.h"
-#include "video.h"
 
 #include <3ds.h>
 #include <mgba/core/core.h>
@@ -100,61 +99,113 @@ static bool cache_rom(const char* path) {
 	return true;
 }
 
-bool emu_load(const char* path) {
+static int s_step = 0;
+static char s_phase[64];
+
+void emu_load_begin(const char* path) {
 	emu_unload();
 	strncpy(s_path, path, sizeof(s_path) - 1);
 	s_path[sizeof(s_path) - 1] = 0;
+	s_step = 1;
+	snprintf(s_phase, sizeof(s_phase), "next: find core");
+}
 
-	video_log("emu: find core");
-	s_core = mCoreFind(path);
-	video_log(s_core ? "emu: core ok" : "emu: no core");
-	if (!s_core) {
-		app_set_status("Not a GBA ROM");
-		return false;
+const char* emu_load_phase(void) {
+	return s_phase;
+}
+
+int emu_load_pump(void) {
+	switch (s_step) {
+	case 1:
+		s_core = mCoreFind(s_path);
+		if (!s_core) {
+			snprintf(s_phase, sizeof(s_phase), "fail: not a GBA ROM");
+			s_step = 0;
+			return 0;
+		}
+		s_step = 2;
+		snprintf(s_phase, sizeof(s_phase), "next: init");
+		return 1;
+	case 2:
+		if (!s_core->init(s_core)) {
+			s_core = NULL;
+			snprintf(s_phase, sizeof(s_phase), "fail: init");
+			s_step = 0;
+			return 0;
+		}
+		s_step = 3;
+		snprintf(s_phase, sizeof(s_phase), "next: video buffer");
+		return 1;
+	case 3:
+		s_core->setVideoBuffer(s_core, s_pixels, GBA_WIDTH);
+		s_step = 4;
+		snprintf(s_phase, sizeof(s_phase), "next: audio buffer");
+		return 1;
+	case 4:
+		s_core->setAudioBufferSize(s_core, 1024);
+		s_step = 5;
+		snprintf(s_phase, sizeof(s_phase), "next: audio rate");
+		return 1;
+	case 5: {
+		unsigned rate = s_core->audioSampleRate(s_core);
+		if (rate) audio_set_rate((float)rate);
+		s_step = 6;
+		snprintf(s_phase, sizeof(s_phase), "next: load file");
+		return 1;
 	}
-	video_log("emu: init");
-	if (!s_core->init(s_core)) {
-		s_core = NULL;
-		video_log("emu: init failed");
-		app_set_status("mGBA init failed");
-		return false;
+	case 6:
+		if (!mCoreLoadFile(s_core, s_path)) {
+			snprintf(s_phase, sizeof(s_phase), "fail: load file");
+			emu_unload();
+			s_step = 0;
+			return 0;
+		}
+		s_step = 7;
+		snprintf(s_phase, sizeof(s_phase), "next: bios");
+		return 1;
+	case 7:
+		if (fs_exists(AGBRA_BIOS_PATH)) {
+			struct VFile* bios = VFileOpen(AGBRA_BIOS_PATH, O_RDONLY);
+			if (bios) s_core->loadBIOS(s_core, bios, 0);
+		}
+		s_step = 8;
+		snprintf(s_phase, sizeof(s_phase), "next: save");
+		return 1;
+	case 8: {
+		char stem[256];
+		app_stem(s_path, stem, sizeof(stem));
+		snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
+		struct VFile* sav = VFileOpen(s_savePath, O_CREAT | O_RDWR);
+		if (sav) s_core->loadSave(s_core, sav);
+		s_step = 9;
+		snprintf(s_phase, sizeof(s_phase), "next: cache rom");
+		return 1;
 	}
-
-	video_log("emu: video buffer");
-	s_core->setVideoBuffer(s_core, s_pixels, GBA_WIDTH);
-	video_log("emu: audio buffer");
-	s_core->setAudioBufferSize(s_core, 1024);
-	unsigned rate = s_core->audioSampleRate(s_core);
-	if (rate) audio_set_rate((float)rate);
-
-	video_log("emu: load file");
-	if (!mCoreLoadFile(s_core, path)) {
-		video_log("emu: load file failed");
-		app_set_status("Failed to load ROM");
-		emu_unload();
-		return false;
+	case 9:
+		cache_rom(s_path);
+		s_step = 10;
+		snprintf(s_phase, sizeof(s_phase), "next: reset");
+		return 1;
+	case 10:
+		s_core->reset(s_core);
+		s_loaded = true;
+		s_step = 0;
+		snprintf(s_phase, sizeof(s_phase), "ready");
+		return 2;
+	default:
+		snprintf(s_phase, sizeof(s_phase), "fail: bad step");
+		s_step = 0;
+		return 0;
 	}
+}
 
-	video_log("emu: bios");
-	if (fs_exists(AGBRA_BIOS_PATH)) {
-		struct VFile* bios = VFileOpen(AGBRA_BIOS_PATH, O_RDONLY);
-		if (bios) s_core->loadBIOS(s_core, bios, 0);
-	}
-
-	video_log("emu: save");
-	char stem[256];
-	app_stem(path, stem, sizeof(stem));
-	snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
-	struct VFile* sav = VFileOpen(s_savePath, O_CREAT | O_RDWR);
-	if (sav) s_core->loadSave(s_core, sav);
-
-	video_log("emu: cache rom");
-	cache_rom(path);
-	video_log("emu: reset");
-	s_core->reset(s_core);
-	s_loaded = true;
-	video_log("emu: ready");
-	return true;
+bool emu_load(const char* path) {
+	int r;
+	emu_load_begin(path);
+	do {
+		r = emu_load_pump();
+	} while (r == 1);
+	return r == 2;
 }
 
 void emu_run_frame(void) {

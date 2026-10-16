@@ -57,6 +57,7 @@ typedef struct App {
 	char romName[256];
 	char romPath[512];
 	int raDelay;
+	bool loading;
 } App;
 
 extern App g_app;

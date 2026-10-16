@@ -7,6 +7,9 @@
 bool emu_init(void);
 void emu_exit(void);
 bool emu_load(const char* path);
+void emu_load_begin(const char* path);
+int emu_load_pump(void);
+const char* emu_load_phase(void);
 void emu_unload(void);
 bool emu_loaded(void);
 void emu_run_frame(void);

@@ -24,8 +24,6 @@ typedef struct HttpJob {
 
 static HttpJob s_jobs[HTTP_MAX_JOBS];
 static LightLock s_lock;
-static Thread s_thread;
-static volatile bool s_run = false;
 
 static int http_download(HttpJob* job) {
 	httpcContext ctx;
@@ -85,45 +83,15 @@ static int http_download(HttpJob* job) {
 	return 0;
 }
 
-static void http_thread(void* arg) {
-	(void)arg;
-	while (s_run) {
-		HttpJob* job = NULL;
-		LightLock_Lock(&s_lock);
-		for (int i = 0; i < HTTP_MAX_JOBS; i++) {
-			if (s_jobs[i].inUse && !s_jobs[i].done && !s_jobs[i].body && s_jobs[i].url[0]) {
-				job = &s_jobs[i];
-				break;
-			}
-		}
-		LightLock_Unlock(&s_lock);
-
-		if (!job) {
-			svcSleepThread(5 * 1000 * 1000);
-			continue;
-		}
-		http_download(job);
-		job->done = 1;
-	}
-}
-
 bool http_init(void) {
 	memset(s_jobs, 0, sizeof(s_jobs));
 	LightLock_Init(&s_lock);
 	acInit();
 	httpcInit(0x4000);
-	s_run = true;
-	s_thread = threadCreate(http_thread, NULL, 64 * 1024, 0x30, -1, false);
 	return true;
 }
 
 void http_exit(void) {
-	s_run = false;
-	if (s_thread) {
-		threadJoin(s_thread, U64_MAX);
-		threadFree(s_thread);
-		s_thread = NULL;
-	}
 	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
 		free(s_jobs[i].post);
 		free(s_jobs[i].body);
@@ -162,6 +130,20 @@ void http_server_call(const rc_api_request_t* request,
 }
 
 void http_poll(void) {
+	HttpJob* pending = NULL;
+	LightLock_Lock(&s_lock);
+	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
+		if (s_jobs[i].inUse && !s_jobs[i].done && s_jobs[i].url[0]) {
+			pending = &s_jobs[i];
+			break;
+		}
+	}
+	LightLock_Unlock(&s_lock);
+	if (pending) {
+		http_download(pending);
+		pending->done = 1;
+	}
+
 	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
 		HttpJob* job = &s_jobs[i];
 		if (!job->inUse || !job->done) continue;

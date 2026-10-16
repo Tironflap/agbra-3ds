@@ -58,23 +58,14 @@ static void footer_status(void) {
 }
 
 static void load_rom_at(int index) {
-	if (index < 0 || index >= s_romCount) return;
-	app_set_status("Loading %s...", s_roms[index].name);
-	ui_draw();
-	video_log("ui: load start");
-	if (!emu_load(s_roms[index].path)) {
-		app_set_status("Load failed");
-		return;
-	}
+	if (index < 0 || index >= s_romCount || g_app.loading) return;
 	strncpy(g_app.romPath, s_roms[index].path, sizeof(g_app.romPath) - 1);
 	g_app.romPath[sizeof(g_app.romPath) - 1] = 0;
 	strncpy(g_app.romName, s_roms[index].name, sizeof(g_app.romName) - 1);
 	g_app.romName[sizeof(g_app.romName) - 1] = 0;
-	g_app.paused = false;
-	g_app.screen = APP_PLAYING;
-	g_app.raDelay = ra_logged_in() ? 45 : 0;
-	audio_clear();
-	app_set_status("Running");
+	emu_load_begin(s_roms[index].path);
+	g_app.loading = true;
+	app_set_status("%s", emu_load_phase());
 }
 
 static void do_login(void) {

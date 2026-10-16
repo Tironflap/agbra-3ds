@@ -147,11 +147,28 @@ int main(int argc, char** argv) {
 			break;
 		}
 
-		http_poll();
-		ra_poll_http();
-		ra_idle();
+		if (!g_app.loading) {
+			http_poll();
+			ra_poll_http();
+			ra_idle();
+		}
 
 		if (g_app.toastFrames > 0) g_app.toastFrames--;
+
+		if (g_app.loading) {
+			int step = emu_load_pump();
+			app_set_status("%s", emu_load_phase());
+			video_log(emu_load_phase());
+			if (step == 2) {
+				g_app.loading = false;
+				g_app.paused = false;
+				g_app.screen = APP_PLAYING;
+				g_app.raDelay = ra_logged_in() ? 90 : 0;
+				audio_clear();
+			} else if (step == 0) {
+				g_app.loading = false;
+			}
+		}
 
 		if (g_app.screen == APP_PLAYING && emu_loaded() && !g_app.paused) {
 			tick_play(down, held);
