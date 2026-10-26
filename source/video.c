@@ -25,7 +25,15 @@ static inline void plot(int x, int y, uint16_t c) {
 	s_top[x * TOP_HEIGHT + (TOP_HEIGHT - 1 - y)] = c;
 }
 
-void video_present(const uint16_t* pixels, int stride) {
+static inline uint16_t xbgra_to_565(uint32_t c) {
+	/* mGBA native 32-bit is XBGR8: R in byte 0, G in byte 1, B in byte 2. */
+	uint32_t r = (c & 0xFFu) >> 3;
+	uint32_t g = ((c >> 8) & 0xFFu) >> 2;
+	uint32_t b = ((c >> 16) & 0xFFu) >> 3;
+	return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+void video_present(const uint32_t* pixels, int stride) {
 	s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
 	(void)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 	if (!s_top) return;
@@ -51,10 +59,10 @@ void video_present(const uint16_t* pixels, int stride) {
 
 	if (g_app.scale == SCALE_1X) {
 		for (int y = 0; y < dh; y++) {
-			const uint16_t* src = pixels + y * stride;
+			const uint32_t* src = pixels + y * stride;
 			int dy = oy + y;
 			for (int x = 0; x < dw; x++) {
-				s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = src[x];
+				s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = xbgra_to_565(src[x]);
 			}
 		}
 		return;
@@ -62,11 +70,11 @@ void video_present(const uint16_t* pixels, int stride) {
 
 	for (int y = 0; y < dh; y++) {
 		int sy = y * GBA_HEIGHT / dh;
-		const uint16_t* src = pixels + sy * stride;
+		const uint32_t* src = pixels + sy * stride;
 		int dy = oy + y;
 		for (int x = 0; x < dw; x++) {
 			int sx = x * GBA_WIDTH / dw;
-			s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = src[sx];
+			s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = xbgra_to_565(src[sx]);
 		}
 	}
 }

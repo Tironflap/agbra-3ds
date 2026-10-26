@@ -45,8 +45,8 @@ bool emu_loaded(void) {
 	return s_loaded && s_core;
 }
 
-const uint16_t* emu_pixels(void) {
-	return (const uint16_t*)s_pixels;
+const uint32_t* emu_pixels(void) {
+	return s_pixels;
 }
 
 int emu_stride(void) {
@@ -127,6 +127,11 @@ int emu_load_pump(void) {
 		snprintf(s_phase, sizeof(s_phase), "next: init");
 		return 1;
 	case 2:
+		if (!s_core->init) {
+			snprintf(s_phase, sizeof(s_phase), "fail: null init");
+			s_step = 0;
+			return 0;
+		}
 		if (!s_core->init(s_core)) {
 			s_core = NULL;
 			snprintf(s_phase, sizeof(s_phase), "fail: init");

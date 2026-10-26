@@ -17,7 +17,7 @@ void emu_reset(void);
 void emu_set_keys(uint32_t keys);
 uint8_t emu_read8(uint32_t address);
 void emu_read(uint32_t address, uint8_t* buf, uint32_t n);
-const uint16_t* emu_pixels(void);
+const uint32_t* emu_pixels(void);
 int emu_stride(void);
 void emu_audio_pump(void);
 bool emu_save_state(int slot);
