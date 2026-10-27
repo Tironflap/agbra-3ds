@@ -6,15 +6,53 @@
 
 #include "app.h"
 #include "audio.h"
-#include "config.h"
 #include "emu.h"
-#include "fs.h"
 #include "http.h"
 #include "input.h"
 #include "overlay.h"
 #include "ra.h"
 #include "ui.h"
 #include "video.h"
+
+#include <3ds.h>
+#include <mgba/core/log.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+/* These symbols belong to libmgba's 3DS port. Defining them here stops
+   ctru-heap.c from being linked: that file opens the SD archive again,
+   which is what kills the fs sysmodule (prefetch abort, process "fs").
+   The library is built with FIXED_ROM_BUFFER, so the ROM is copied into
+   romBuffer instead of being mapped from the file. */
+uint32_t* romBuffer = NULL;
+size_t romBufferSize = 0;
+FS_Archive sdmcArchive;
+u32 __stacksize__ = 256 * 1024;
+
+void userAppInit(void) {
+	/* Heap, not linear: the framebuffers already consume linear RAM. */
+	romBuffer = malloc(0x02000000);
+	if (romBuffer) {
+		romBufferSize = 0x02000000;
+		return;
+	}
+	romBuffer = malloc(0x01000000);
+	if (romBuffer) romBufferSize = 0x01000000;
+}
+
+static void quiet_log(struct mLogger* logger, int category, enum mLogLevel level,
+                      const char* format, va_list args) {
+	(void)logger;
+	(void)category;
+	(void)level;
+	(void)format;
+	(void)args;
+}
+
+static struct mLogger s_quiet = { quiet_log };
+
+#include "config.h"
 
 App g_app;
 
@@ -93,12 +131,17 @@ static void tick_play(u32 down, u32 held) {
 
 	emu_set_keys(input_gba_keys(held));
 
-	if (g_app.raDelay > 0 && --g_app.raDelay == 0) {
-		video_log("ra: hash + load");
-		size_t sz = 0;
-		const uint8_t* rom = emu_rom_data(&sz);
-		ra_load_game(g_app.romPath, rom, sz);
-		video_log("ra: request sent");
+	if (g_app.raDelay > 0) {
+		if (--g_app.raDelay == 0) {
+			video_log("ra: hash + load");
+			size_t sz = 0;
+			const uint8_t* rom = emu_rom_data(&sz);
+			ra_load_game(g_app.romPath, rom, sz);
+			emu_release_rom();
+			video_log("ra: request sent");
+		}
+	} else {
+		emu_release_rom();
 	}
 
 	int frames = g_app.fastForward ? 3 : 1;
@@ -113,6 +156,7 @@ int main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;
 
+	mLogSetDefaultLogger(&s_quiet);
 	osSetSpeedupEnable(true);
 
 	video_init();

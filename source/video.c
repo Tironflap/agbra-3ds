@@ -25,56 +25,60 @@ static inline void plot(int x, int y, uint16_t c) {
 	s_top[x * TOP_HEIGHT + (TOP_HEIGHT - 1 - y)] = c;
 }
 
-static inline uint16_t xbgra_to_565(uint32_t c) {
-	/* mGBA native 32-bit is XBGR8: R in byte 0, G in byte 1, B in byte 2. */
-	uint32_t r = (c & 0xFFu) >> 3;
-	uint32_t g = ((c >> 8) & 0xFFu) >> 2;
-	uint32_t b = ((c >> 16) & 0xFFu) >> 3;
-	return (uint16_t)((r << 11) | (g << 5) | b);
-}
-
-void video_present(const uint32_t* pixels, int stride) {
+void video_present(const uint16_t* pixels, int stride) {
 	s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
-	(void)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 	if (!s_top) return;
-	memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
+
+	static int clearedMode = -1;
+	static int clearedFrames = 0;
+	int mode = (int)g_app.scale;
+	if (clearedMode != mode) {
+		clearedMode = mode;
+		clearedFrames = 0;
+	}
+	if (clearedFrames < 2) {
+		memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
+		clearedFrames++;
+	}
 	if (!pixels || stride <= 0) return;
 
-	/* 1x is the only mode that stays responsive inside a PC 3DS emulator. */
-	int dw = GBA_WIDTH;
-	int dh = GBA_HEIGHT;
-	int ox = (TOP_WIDTH - dw) / 2;
-	int oy = (TOP_HEIGHT - dh) / 2;
-	if (g_app.scale == SCALE_FILL) {
-		dw = TOP_WIDTH;
-		dh = TOP_HEIGHT;
-		ox = 0;
-		oy = 0;
-	} else if (g_app.scale == SCALE_FIT) {
-		dw = 360;
-		dh = 240;
-		ox = (TOP_WIDTH - dw) / 2;
-		oy = 0;
-	}
-
-	if (g_app.scale == SCALE_1X) {
+	if (mode != (int)SCALE_1X) {
+		int dw = GBA_WIDTH;
+		int dh = GBA_HEIGHT;
+		int ox = (TOP_WIDTH - dw) / 2;
+		int oy = (TOP_HEIGHT - dh) / 2;
+		if (mode == (int)SCALE_FILL) {
+			dw = TOP_WIDTH;
+			dh = TOP_HEIGHT;
+			ox = 0;
+			oy = 0;
+		} else if (mode == (int)SCALE_FIT) {
+			dw = 360;
+			dh = 240;
+			ox = (TOP_WIDTH - dw) / 2;
+			oy = 0;
+		}
 		for (int y = 0; y < dh; y++) {
-			const uint32_t* src = pixels + y * stride;
+			int sy = y * GBA_HEIGHT / dh;
+			const uint16_t* src = pixels + sy * stride;
 			int dy = oy + y;
 			for (int x = 0; x < dw; x++) {
-				s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = xbgra_to_565(src[x]);
+				int sx = x * GBA_WIDTH / dw;
+				s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = src[sx];
 			}
 		}
 		return;
 	}
 
-	for (int y = 0; y < dh; y++) {
-		int sy = y * GBA_HEIGHT / dh;
-		const uint32_t* src = pixels + sy * stride;
-		int dy = oy + y;
-		for (int x = 0; x < dw; x++) {
-			int sx = x * GBA_WIDTH / dw;
-			s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = xbgra_to_565(src[sx]);
+	/* Column copy matches the 3DS framebuffer, so it stays in cache. */
+	int ox = (TOP_WIDTH - GBA_WIDTH) / 2;
+	int oy = (TOP_HEIGHT - GBA_HEIGHT) / 2;
+	for (int x = 0; x < GBA_WIDTH; x++) {
+		const uint16_t* src = pixels + x;
+		uint16_t* dst = s_top + (ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - oy);
+		for (int y = 0; y < GBA_HEIGHT; y++) {
+			*dst-- = *src;
+			src += stride;
 		}
 	}
 }

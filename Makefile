@@ -46,6 +46,7 @@ CFLAGS	:=	-g -Wall -O2 -mword-relocations \
 CFLAGS	+=	$(INCLUDE) -D__3DS__ -D_GNU_SOURCE \
 			-DRC_CLIENT_SUPPORTS_HASH -DRC_STATIC \
 			-DENABLE_VFS -DENABLE_DIRECTORIES \
+			-DCOLOR_16_BIT -DCOLOR_5_6_5 \
 			-Wno-incompatible-pointer-types -Wno-format
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11

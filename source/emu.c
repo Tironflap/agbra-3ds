@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern uint32_t* romBuffer;
+extern size_t romBufferSize;
+
 
 static struct mCore* s_core = NULL;
 static mColor* s_pixels = NULL;
@@ -20,10 +23,11 @@ static uint8_t* s_rom = NULL;
 static size_t s_romSize = 0;
 static char s_path[512];
 static char s_savePath[512];
+static struct VFile* s_savVf = NULL;
 static bool s_loaded = false;
 
 static void free_rom_copy(void) {
-	free(s_rom);
+	/* Points at romBuffer, which lives until the process exits. */
 	s_rom = NULL;
 	s_romSize = 0;
 }
@@ -45,7 +49,7 @@ bool emu_loaded(void) {
 	return s_loaded && s_core;
 }
 
-const uint32_t* emu_pixels(void) {
+const uint16_t* emu_pixels(void) {
 	return s_pixels;
 }
 
@@ -58,6 +62,10 @@ const uint8_t* emu_rom_data(size_t* size) {
 	return s_rom;
 }
 
+void emu_release_rom(void) {
+	free_rom_copy();
+}
+
 const char* emu_rom_path(void) {
 	return s_path;
 }
@@ -68,6 +76,10 @@ void emu_unload(void) {
 		s_core->deinit(s_core);
 		s_core = NULL;
 	}
+	if (s_savVf) {
+		s_savVf->close(s_savVf);
+		s_savVf = NULL;
+	}
 	free_rom_copy();
 	s_loaded = false;
 	s_path[0] = 0;
@@ -75,26 +87,18 @@ void emu_unload(void) {
 
 static bool cache_rom(const char* path) {
 	free_rom_copy();
+	if (!romBuffer) return false;
 	FILE* f = fopen(path, "rb");
 	if (!f) return false;
-	fseek(f, 0, SEEK_END);
+	if (fseek(f, 0, SEEK_END) != 0) {
+		fclose(f);
+		return false;
+	}
 	long sz = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (sz <= 0 || sz > 32 * 1024 * 1024) {
-		fclose(f);
-		return false;
-	}
-	s_rom = malloc((size_t)sz);
-	if (!s_rom) {
-		fclose(f);
-		return false;
-	}
-	if (fread(s_rom, 1, (size_t)sz, f) != (size_t)sz) {
-		free_rom_copy();
-		fclose(f);
-		return false;
-	}
 	fclose(f);
+	if (sz <= 0 || (size_t)sz > romBufferSize) return false;
+	/* Bytes already sit in romBuffer. Hash that, don't read the ROM twice. */
+	s_rom = (uint8_t*)romBuffer;
 	s_romSize = (size_t)sz;
 	return true;
 }
@@ -178,10 +182,34 @@ int emu_load_pump(void) {
 		return 1;
 	case 8: {
 		char stem[256];
+		uint8_t* data = NULL;
+		size_t sz = 0;
 		app_stem(s_path, stem, sizeof(stem));
 		snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
-		struct VFile* sav = VFileOpen(s_savePath, O_CREAT | O_RDWR);
-		if (sav) s_core->loadSave(s_core, sav);
+		FILE* sf = fopen(s_savePath, "rb");
+		if (sf) {
+			fseek(sf, 0, SEEK_END);
+			long n = ftell(sf);
+			if (n > 0 && n <= 128 * 1024) {
+				data = malloc((size_t)n);
+				if (data) {
+					fseek(sf, 0, SEEK_SET);
+					if (fread(data, 1, (size_t)n, sf) == (size_t)n) sz = (size_t)n;
+					else {
+						free(data);
+						data = NULL;
+					}
+				}
+			}
+			fclose(sf);
+		}
+		if (s_savVf) {
+			s_savVf->close(s_savVf);
+			s_savVf = NULL;
+		}
+		s_savVf = VFileMemChunk(data, sz);
+		free(data);
+		if (s_savVf) s_core->loadSave(s_core, s_savVf);
 		s_step = 9;
 		snprintf(s_phase, sizeof(s_phase), "next: cache rom");
 		return 1;
@@ -191,12 +219,17 @@ int emu_load_pump(void) {
 		s_step = 10;
 		snprintf(s_phase, sizeof(s_phase), "next: reset");
 		return 1;
-	case 10:
+	case 10: {
+		bool new3ds = false;
+		APT_CheckNew3DS(&new3ds);
+		/* Old 3DS can't draw every GBA frame and still hit full speed. */
+		s_core->opts.frameskip = new3ds ? 0 : 1;
 		s_core->reset(s_core);
 		s_loaded = true;
 		s_step = 0;
 		snprintf(s_phase, sizeof(s_phase), "ready");
 		return 2;
+	}
 	default:
 		snprintf(s_phase, sizeof(s_phase), "fail: bad step");
 		s_step = 0;
@@ -244,7 +277,17 @@ void emu_audio_pump(void) {
 }
 
 void emu_flush_save(void) {
-	/* mGBA writeback happens through the VFile kept open by loadSave. */
+	if (!s_savVf || !s_savePath[0]) return;
+	size_t n = (size_t)s_savVf->size(s_savVf);
+	if (!n) return;
+	void* p = s_savVf->map(s_savVf, n, 0);
+	if (!p) return;
+	FILE* f = fopen(s_savePath, "wb");
+	if (f) {
+		fwrite(p, 1, n, f);
+		fclose(f);
+	}
+	s_savVf->unmap(s_savVf, p, n);
 }
 
 bool emu_save_state(int slot) {
@@ -252,9 +295,21 @@ bool emu_save_state(int slot) {
 	char stem[256], path[512];
 	app_stem(s_path, stem, sizeof(stem));
 	snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
-	struct VFile* vf = VFileOpen(path, O_CREAT | O_TRUNC | O_RDWR);
+	struct VFile* vf = VFileMemChunk(NULL, 0);
 	if (!vf) return false;
 	bool ok = mCoreSaveStateNamed(s_core, vf, 0);
+	if (ok) {
+		size_t n = (size_t)vf->size(vf);
+		void* p = n ? vf->map(vf, n, 0) : NULL;
+		FILE* f = p ? fopen(path, "wb") : NULL;
+		if (f) {
+			ok = fwrite(p, 1, n, f) == n;
+			fclose(f);
+		} else {
+			ok = false;
+		}
+		if (p) vf->unmap(vf, p, n);
+	}
 	vf->close(vf);
 	return ok;
 }
@@ -264,7 +319,28 @@ bool emu_load_state(int slot) {
 	char stem[256], path[512];
 	app_stem(s_path, stem, sizeof(stem));
 	snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
-	struct VFile* vf = VFileOpen(path, O_RDONLY);
+	FILE* f = fopen(path, "rb");
+	if (!f) return false;
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	if (n <= 0) {
+		fclose(f);
+		return false;
+	}
+	uint8_t* data = malloc((size_t)n);
+	if (!data) {
+		fclose(f);
+		return false;
+	}
+	fseek(f, 0, SEEK_SET);
+	bool readOk = fread(data, 1, (size_t)n, f) == (size_t)n;
+	fclose(f);
+	if (!readOk) {
+		free(data);
+		return false;
+	}
+	struct VFile* vf = VFileMemChunk(data, (size_t)n);
+	free(data);
 	if (!vf) return false;
 	bool ok = mCoreLoadStateNamed(s_core, vf, 0);
 	vf->close(vf);
