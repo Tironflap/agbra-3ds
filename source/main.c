@@ -7,6 +7,7 @@
 #include "app.h"
 #include "audio.h"
 #include "emu.h"
+#include "fs.h"
 #include "http.h"
 #include "input.h"
 #include "overlay.h"
