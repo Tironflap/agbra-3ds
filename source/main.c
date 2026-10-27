@@ -134,12 +134,10 @@ static void tick_play(u32 down, u32 held) {
 
 	if (g_app.raDelay > 0) {
 		if (--g_app.raDelay == 0) {
-			video_log("ra: hash + load");
 			size_t sz = 0;
 			const uint8_t* rom = emu_rom_data(&sz);
 			ra_load_game(g_app.romPath, rom, sz);
 			emu_release_rom();
-			video_log("ra: request sent");
 		}
 	} else {
 		emu_release_rom();
@@ -158,9 +156,11 @@ int main(int argc, char** argv) {
 	(void)argv;
 
 	mLogSetDefaultLogger(&s_quiet);
-	osSetSpeedupEnable(true);
 
 	video_init();
+	/* gfxInit brings apt up. The 804 MHz request is ignored before that,
+	   which leaves a New 3DS at old-3DS speed and the game in slow motion. */
+	osSetSpeedupEnable(true);
 	ui_init();
 	audio_init();
 	http_init();
@@ -210,6 +210,7 @@ int main(int argc, char** argv) {
 				g_app.screen = APP_PLAYING;
 				g_app.raDelay = ra_logged_in() ? 90 : 0;
 				audio_clear();
+				video_wipe();
 				ui_show_playing();
 			} else if (step == 0) {
 				g_app.loading = false;

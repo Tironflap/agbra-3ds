@@ -150,9 +150,10 @@ void video_overlay_text(int x, int y, const char* text, uint16_t color) {
 #define LOG_LEN 70
 static char s_log[LOG_LINES][LOG_LEN];
 static int s_logCount = 0;
+static bool s_logDraw = true;
 
 void video_log(const char* msg) {
-	if (!msg) return;
+	if (!msg || !s_logDraw) return;
 	if (s_logCount < LOG_LINES) {
 		strncpy(s_log[s_logCount], msg, LOG_LEN - 1);
 		s_log[s_logCount][LOG_LEN - 1] = 0;
@@ -162,16 +163,29 @@ void video_log(const char* msg) {
 		strncpy(s_log[LOG_LINES - 1], msg, LOG_LEN - 1);
 		s_log[LOG_LINES - 1][LOG_LEN - 1] = 0;
 	}
-	/* Draw only. The main loop presents once per apt frame.
-	   Swapping or waiting for vblank here deadlocks Citra. */
+	/* Only used while a ROM is loading. Drawing this over a running game
+	   leaves text in the margins of one buffer, which then flashes. */
 	gfxSetDoubleBuffering(GFX_TOP, true);
 	s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
 	if (!s_top) return;
 	memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
-	video_overlay_text(6, 6, "AGB-RA  top log", 0xFFE0);
+	video_overlay_text(6, 6, "AGB-RA", 0xFFE0);
 	for (int i = 0; i < s_logCount; i++) {
 		video_overlay_text(6, 18 + i * 10, s_log[i], 0xFFFF);
 	}
+}
+
+void video_wipe(void) {
+	s_logDraw = false;
+	s_logCount = 0;
+	for (int i = 0; i < 2; i++) {
+		s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+		if (s_top) memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
+		gfxFlushBuffers();
+		gfxSwapBuffers();
+		gspWaitForVBlank();
+	}
+	s_top = NULL;
 }
 
 void video_flush(void) {
