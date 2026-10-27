@@ -52,9 +52,10 @@ CFLAGS	+=	$(INCLUDE) -D__3DS__ -D_GNU_SOURCE \
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) \
+			-Wl,--wrap,read,--wrap,write
 
-LIBS	:= -lmgba -lz -lctru -lm
+LIBS	:= -lmgba -lz -lmbedtls -lmbedx509 -lmbedcrypto -lctru -lm
 
 #---------------------------------------------------------------------------------
 LIBDIRS	:= $(CTRULIB) $(PORTLIBS) $(MGBA_PREFIX)

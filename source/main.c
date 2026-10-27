@@ -32,14 +32,18 @@ FS_Archive sdmcArchive;
 u32 __stacksize__ = 256 * 1024;
 
 void userAppInit(void) {
-	/* Heap, not linear: the framebuffers already consume linear RAM. */
+	/* Heap, not linear: the framebuffers already consume linear RAM.
+	   32MB only if another 8MB still fits, so an old 3DS is not left empty. */
+	void* spare = malloc(8 * 1024 * 1024);
 	romBuffer = malloc(0x02000000);
-	if (romBuffer) {
+	if (romBuffer && spare) {
 		romBufferSize = 0x02000000;
-		return;
+	} else {
+		free(romBuffer);
+		romBuffer = malloc(0x01000000);
+		if (romBuffer) romBufferSize = 0x01000000;
 	}
-	romBuffer = malloc(0x01000000);
-	if (romBuffer) romBufferSize = 0x01000000;
+	free(spare);
 }
 
 static void quiet_log(struct mLogger* logger, int category, enum mLogLevel level,

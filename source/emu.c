@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 extern uint32_t* romBuffer;
 extern size_t romBufferSize;
@@ -186,22 +187,21 @@ int emu_load_pump(void) {
 		size_t sz = 0;
 		app_stem(s_path, stem, sizeof(stem));
 		snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
-		FILE* sf = fopen(s_savePath, "rb");
-		if (sf) {
-			fseek(sf, 0, SEEK_END);
-			long n = ftell(sf);
+		int sfd = open(s_savePath, O_RDONLY);
+		if (sfd >= 0) {
+			off_t n = lseek(sfd, 0, SEEK_END);
 			if (n > 0 && n <= 128 * 1024) {
 				data = malloc((size_t)n);
 				if (data) {
-					fseek(sf, 0, SEEK_SET);
-					if (fread(data, 1, (size_t)n, sf) == (size_t)n) sz = (size_t)n;
+					lseek(sfd, 0, SEEK_SET);
+					if (read(sfd, data, (size_t)n) == n) sz = (size_t)n;
 					else {
 						free(data);
 						data = NULL;
 					}
 				}
 			}
-			fclose(sf);
+			close(sfd);
 		}
 		if (s_savVf) {
 			s_savVf->close(s_savVf);
@@ -222,8 +222,8 @@ int emu_load_pump(void) {
 	case 10: {
 		bool new3ds = false;
 		APT_CheckNew3DS(&new3ds);
-		/* Old 3DS can't draw every GBA frame and still hit full speed. */
-		s_core->opts.frameskip = new3ds ? 0 : 1;
+		/* Old 3DS spends too long in the software renderer to also stay at 60. */
+		s_core->opts.frameskip = new3ds ? 0 : 2;
 		s_core->reset(s_core);
 		s_loaded = true;
 		s_step = 0;
@@ -282,10 +282,11 @@ void emu_flush_save(void) {
 	if (!n) return;
 	void* p = s_savVf->map(s_savVf, n, 0);
 	if (!p) return;
-	FILE* f = fopen(s_savePath, "wb");
-	if (f) {
-		fwrite(p, 1, n, f);
-		fclose(f);
+	int fd = open(s_savePath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (fd >= 0) {
+		ssize_t wr = write(fd, p, n);
+		close(fd);
+		(void)wr;
 	}
 	s_savVf->unmap(s_savVf, p, n);
 }
@@ -301,10 +302,10 @@ bool emu_save_state(int slot) {
 	if (ok) {
 		size_t n = (size_t)vf->size(vf);
 		void* p = n ? vf->map(vf, n, 0) : NULL;
-		FILE* f = p ? fopen(path, "wb") : NULL;
-		if (f) {
-			ok = fwrite(p, 1, n, f) == n;
-			fclose(f);
+		int fd = p ? open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
+		if (fd >= 0) {
+			ok = write(fd, p, n) == (ssize_t)n;
+			close(fd);
 		} else {
 			ok = false;
 		}
@@ -319,22 +320,21 @@ bool emu_load_state(int slot) {
 	char stem[256], path[512];
 	app_stem(s_path, stem, sizeof(stem));
 	snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
-	FILE* f = fopen(path, "rb");
-	if (!f) return false;
-	fseek(f, 0, SEEK_END);
-	long n = ftell(f);
+	int fd = open(path, O_RDONLY);
+	if (fd < 0) return false;
+	off_t n = lseek(fd, 0, SEEK_END);
 	if (n <= 0) {
-		fclose(f);
+		close(fd);
 		return false;
 	}
 	uint8_t* data = malloc((size_t)n);
 	if (!data) {
-		fclose(f);
+		close(fd);
 		return false;
 	}
-	fseek(f, 0, SEEK_SET);
-	bool readOk = fread(data, 1, (size_t)n, f) == (size_t)n;
-	fclose(f);
+	lseek(fd, 0, SEEK_SET);
+	bool readOk = read(fd, data, (size_t)n) == n;
+	close(fd);
 	if (!readOk) {
 		free(data);
 		return false;
