@@ -21,12 +21,44 @@ static const char* MENU_ITEMS[] = {
 	"Reset game",
 	"Toggle hardcore",
 	"Scale mode",
+	"Frameskip",
+	"Accuracy",
 	"Close ROM",
 	"Quit"
 };
-#define MENU_N 7
+#define MENU_N 9
 
 static const char* SCALE_NAME[] = { "1x centered", "Fit 360x240", "Fill 400x240" };
+static const char* SKIP_NAME[] = { "Auto", "Off", "1", "2", "3", "4", "5" };
+static const char* ACC_NAME[] = { "Fast", "Normal", "Hardware" };
+
+static const char* frameskip_label(void) {
+	int s = g_cfg.frameskip + 1;
+	if (s < 0) s = 0;
+	if (s > 6) s = 6;
+	return SKIP_NAME[s];
+}
+
+static const char* accuracy_label(void) {
+	int a = g_cfg.accuracy;
+	if (a < 0 || a > 2) a = 1;
+	return ACC_NAME[a];
+}
+
+static void cycle_frameskip(void) {
+	if (g_cfg.frameskip >= 5) g_cfg.frameskip = -1;
+	else g_cfg.frameskip++;
+	config_save();
+	emu_apply_options();
+	app_set_status("Frameskip %s", frameskip_label());
+}
+
+static void cycle_accuracy(void) {
+	g_cfg.accuracy = (g_cfg.accuracy + 1) % 3;
+	config_save();
+	emu_apply_options();
+	app_set_status("Accuracy %s", accuracy_label());
+}
 
 static void scan_if_needed(void) {
 	if (s_scanned) return;
@@ -106,6 +138,8 @@ static void draw_menu(void) {
 		printf("%s%s\x1b[0m", i == g_app.menuIndex ? "\x1b[47;30m> " : "  ", MENU_ITEMS[i]);
 		if (i == 3) printf("  [%s]", g_app.hardcore ? "ON" : "off");
 		if (i == 4) printf("  [%s]", SCALE_NAME[g_app.scale]);
+		if (i == 5) printf("  [%s]", frameskip_label());
+		if (i == 6) printf("  [%s]", accuracy_label());
 		printf("\n");
 	}
 	footer_status();
@@ -152,9 +186,11 @@ static void draw_settings(void) {
 	printf("Hardcore    %s\n", g_app.hardcore ? "ON" : "off");
 	printf("Unofficial  %s\n", g_app.unofficial ? "ON" : "off");
 	printf("Scale       %s\n", SCALE_NAME[g_app.scale]);
+	printf("Frameskip   %s\n", frameskip_label());
+	printf("Accuracy    %s\n", accuracy_label());
 	printf("BIOS        %s\n", fs_exists(AGBRA_BIOS_PATH) ? "found" : "missing (HLE)");
 	footer_status();
-	printf("\nB back");
+	printf("\nA hardcore  X unofficial  Y scale\nL frameskip  R accuracy  B back");
 }
 
 void ui_init(void) {
@@ -254,6 +290,12 @@ static void handle_menu(u32 down) {
 		config_save();
 		break;
 	case 5:
+		cycle_frameskip();
+		break;
+	case 6:
+		cycle_accuracy();
+		break;
+	case 7:
 		emu_flush_save();
 		ra_unload_game();
 		emu_unload();
@@ -261,7 +303,7 @@ static void handle_menu(u32 down) {
 		g_app.romName[0] = 0;
 		app_set_status("ROM closed");
 		break;
-	case 6:
+	case 8:
 		g_app.running = false;
 		break;
 	}
@@ -289,6 +331,8 @@ static void handle_settings(u32 down) {
 		g_cfg.scale = (int)g_app.scale;
 		config_save();
 	}
+	if (down & KEY_L) cycle_frameskip();
+	if (down & KEY_R) cycle_accuracy();
 	if (down & KEY_B) g_app.screen = APP_BROWSER;
 }
 

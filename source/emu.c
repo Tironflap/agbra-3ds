@@ -1,6 +1,7 @@
 #include "emu.h"
 #include "app.h"
 #include "audio.h"
+#include "config.h"
 #include "fs.h"
 
 #include <3ds.h>
@@ -229,10 +230,7 @@ int emu_load_pump(void) {
 		snprintf(s_phase, sizeof(s_phase), "next: reset");
 		return 1;
 	case 10: {
-		bool new3ds = false;
-		APT_CheckNew3DS(&new3ds);
-		/* Old 3DS spends too long in the software renderer to also stay at 60. */
-		s_core->opts.frameskip = new3ds ? 0 : 2;
+		emu_apply_options();
 		s_core->reset(s_core);
 		s_loaded = true;
 		s_step = 0;
@@ -253,6 +251,24 @@ bool emu_load(const char* path) {
 		r = emu_load_pump();
 	} while (r == 1);
 	return r == 2;
+}
+
+void emu_apply_options(void) {
+	if (!s_core || !s_config) return;
+	int skip = g_cfg.frameskip;
+	if (skip < 0) {
+		bool new3ds = false;
+		APT_CheckNew3DS(&new3ds);
+		skip = new3ds ? 0 : 2;
+	}
+	if (skip > 5) skip = 5;
+	s_core->opts.frameskip = skip;
+
+	const char* idle = "remove";
+	if (g_cfg.accuracy <= 0) idle = "detect";
+	else if (g_cfg.accuracy >= 2) idle = "ignore";
+	mCoreConfigSetValue(&s_core->config, "idleOptimization", idle);
+	if (s_core->loadConfig) s_core->loadConfig(s_core, &s_core->config);
 }
 
 void emu_run_frame(void) {

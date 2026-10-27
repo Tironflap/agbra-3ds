@@ -3,6 +3,7 @@
 #include "fs.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 Config g_cfg = {
@@ -11,6 +12,8 @@ Config g_cfg = {
 	.hardcore = true,
 	.unofficial = false,
 	.scale = 0,
+	.frameskip = -1,
+	.accuracy = 1,
 };
 
 static void trim(char* s) {
@@ -41,8 +44,15 @@ void config_load(void) {
 		} else if (strcmp(key, "unofficial") == 0) {
 			g_cfg.unofficial = val[0] == '1';
 		} else if (strcmp(key, "scale") == 0) {
-			g_cfg.scale = val[0] - '0';
-			if (g_cfg.scale < 0 || g_cfg.scale > 2) g_cfg.scale = 1;
+			g_cfg.scale = atoi(val);
+			if (g_cfg.scale < 0 || g_cfg.scale > 2) g_cfg.scale = 0;
+		} else if (strcmp(key, "frameskip") == 0) {
+			g_cfg.frameskip = atoi(val);
+			if (g_cfg.frameskip < -1) g_cfg.frameskip = -1;
+			if (g_cfg.frameskip > 5) g_cfg.frameskip = 5;
+		} else if (strcmp(key, "accuracy") == 0) {
+			g_cfg.accuracy = atoi(val);
+			if (g_cfg.accuracy < 0 || g_cfg.accuracy > 2) g_cfg.accuracy = 1;
 		}
 	}
 	fclose(f);
@@ -57,5 +67,7 @@ void config_save(void) {
 	fprintf(f, "hardcore=%d\n", g_cfg.hardcore ? 1 : 0);
 	fprintf(f, "unofficial=%d\n", g_cfg.unofficial ? 1 : 0);
 	fprintf(f, "scale=%d\n", g_cfg.scale);
+	fprintf(f, "frameskip=%d\n", g_cfg.frameskip);
+	fprintf(f, "accuracy=%d\n", g_cfg.accuracy);
 	fclose(f);
 }
