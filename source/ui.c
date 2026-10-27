@@ -160,6 +160,32 @@ static void draw_settings(void) {
 void ui_init(void) {
 }
 
+static void draw_playing(void) {
+	cls();
+	header();
+	printf("%s\n", g_app.romName);
+	if (ra_game_title()) printf("%s\n", ra_game_title());
+	uint32_t u = 0, t = 0, p = 0;
+	ra_summary(&u, &t, &p);
+	if (t) printf("%" PRIu32 " / %" PRIu32 " cheevos   %" PRIu32 " pts\n", u, t, p);
+	char rp[120];
+	ra_rich_presence(rp, sizeof(rp));
+	if (rp[0]) printf("%s\n", rp);
+	printf("\nL+R+Down  menu\n");
+	if (!g_app.hardcore) printf("X save state  Y load  ZL turbo\n");
+	else printf("Hardcore: states and turbo locked\n");
+	footer_status();
+}
+
+void ui_show_playing(void) {
+	s_romCount = 0;
+	s_scanned = false;
+	g_app.browserIndex = 0;
+	draw_playing();
+	gfxFlushBuffers();
+	gfxSwapBuffers();
+}
+
 void ui_draw(void) {
 	switch (g_app.screen) {
 	case APP_BROWSER: draw_browser(); break;
@@ -167,22 +193,7 @@ void ui_draw(void) {
 	case APP_MENU: draw_menu(); break;
 	case APP_CHEEVOS: draw_cheevos(); break;
 	case APP_SETTINGS: draw_settings(); break;
-	case APP_PLAYING:
-		cls();
-		header();
-		printf("%s\n", g_app.romName);
-		if (ra_game_title()) printf("%s\n", ra_game_title());
-		uint32_t u = 0, t = 0, p = 0;
-		ra_summary(&u, &t, &p);
-		if (t) printf("%" PRIu32 " / %" PRIu32 " cheevos   %" PRIu32 " pts\n", u, t, p);
-		char rp[120];
-		ra_rich_presence(rp, sizeof(rp));
-		if (rp[0]) printf("%s\n", rp);
-		printf("\nL+R+Down  menu\n");
-		if (!g_app.hardcore) printf("X save state  Y load  ZL turbo\n");
-		else printf("Hardcore: states and turbo locked\n");
-		footer_status();
-		break;
+	case APP_PLAYING: draw_playing(); break;
 	}
 	gfxFlushBuffers();
 	gfxSwapBuffers();

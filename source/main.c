@@ -29,21 +29,17 @@
 uint32_t* romBuffer = NULL;
 size_t romBufferSize = 0;
 FS_Archive sdmcArchive;
-u32 __stacksize__ = 256 * 1024;
+u32 __stacksize__ = 384 * 1024;
 
 void userAppInit(void) {
-	/* Heap, not linear: the framebuffers already consume linear RAM.
-	   32MB only if another 8MB still fits, so an old 3DS is not left empty. */
-	void* spare = malloc(8 * 1024 * 1024);
-	romBuffer = malloc(0x02000000);
-	if (romBuffer && spare) {
-		romBufferSize = 0x02000000;
-	} else {
-		free(romBuffer);
-		romBuffer = malloc(0x01000000);
-		if (romBuffer) romBufferSize = 0x01000000;
+	/* 16MB covers retail GBA carts and leaves RAM for audio and the core.
+	   A 32MB reservation was crashing the app once the ROM started. */
+	romBuffer = malloc(0x01000000);
+	if (romBuffer) romBufferSize = 0x01000000;
+	else {
+		romBuffer = malloc(0x00800000);
+		if (romBuffer) romBufferSize = 0x00800000;
 	}
-	free(spare);
 }
 
 static void quiet_log(struct mLogger* logger, int category, enum mLogLevel level,
@@ -214,6 +210,7 @@ int main(int argc, char** argv) {
 				g_app.screen = APP_PLAYING;
 				g_app.raDelay = ra_logged_in() ? 90 : 0;
 				audio_clear();
+				ui_show_playing();
 			} else if (step == 0) {
 				g_app.loading = false;
 			}
