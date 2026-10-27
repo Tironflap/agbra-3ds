@@ -26,6 +26,7 @@ static char s_path[512];
 static char s_savePath[512];
 static struct VFile* s_savVf = NULL;
 static bool s_loaded = false;
+static bool s_config = false;
 
 static void free_rom_copy(void) {
 	/* Points at romBuffer, which lives until the process exits. */
@@ -74,6 +75,10 @@ const char* emu_rom_path(void) {
 void emu_unload(void) {
 	if (s_core) {
 		emu_flush_save();
+		if (s_config) {
+			mCoreConfigDeinit(&s_core->config);
+			s_config = false;
+		}
 		s_core->deinit(s_core);
 		s_core = NULL;
 	}
@@ -143,6 +148,10 @@ int emu_load_pump(void) {
 			s_step = 0;
 			return 0;
 		}
+		/* Reset looks up "gba.forceGbp" in this table. Uninitialized, it data-aborts. */
+		mCoreInitConfig(s_core, "agbra");
+		s_config = true;
+		s_core->opts.useBios = false;
 		s_step = 3;
 		snprintf(s_phase, sizeof(s_phase), "next: video buffer");
 		return 1;
