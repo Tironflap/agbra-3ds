@@ -24,19 +24,24 @@ static uint32_t RC_CCONV ra_read_memory(uint32_t address, uint8_t* buffer, uint3
 	(void)client;
 	if (!emu_loaded() || !buffer || !num_bytes) return 0;
 	const rc_memory_regions_t* regions = rc_console_memory_regions(RC_CONSOLE_GAMEBOY_ADVANCE);
-	for (uint32_t i = 0; i < num_bytes; i++) {
-		uint32_t addr = address + i;
+	uint32_t done = 0;
+	while (done < num_bytes) {
+		uint32_t addr = address + done;
 		uint32_t real = addr;
+		uint32_t span = num_bytes - done;
 		if (regions) {
 			for (uint32_t r = 0; r < regions->num_regions; r++) {
 				const rc_memory_region_t* reg = &regions->region[r];
 				if (addr >= reg->start_address && addr <= reg->end_address) {
 					real = reg->real_address + (addr - reg->start_address);
+					uint32_t room = reg->end_address - addr + 1;
+					if (room < span) span = room;
 					break;
 				}
 			}
 		}
-		buffer[i] = emu_read8(real);
+		for (uint32_t i = 0; i < span; i++) buffer[done + i] = emu_read8(real + i);
+		done += span;
 	}
 	return num_bytes;
 }
@@ -106,7 +111,9 @@ static void RC_CCONV load_cb(int result, const char* error_message, rc_client_t*
 	(void)userdata;
 	(void)client;
 	if (result != RC_OK) {
-		app_set_status("RA: %s", error_message ? error_message : rc_error_str(result));
+		const char* msg = error_message ? error_message : rc_error_str(result);
+		app_set_status("RA: %s", msg);
+		overlay_push("Not recognized", msg);
 		return;
 	}
 	const rc_client_game_t* game = rc_client_get_game_info(s_client);
@@ -174,11 +181,16 @@ void ra_logout(void) {
 }
 
 void ra_load_game(const char* path, const uint8_t* rom, size_t romSize) {
-	if (!s_client) return;
+	(void)rom;
+	(void)romSize;
+	if (!s_client || !path || !path[0]) return;
 	rc_client_set_hardcore_enabled(s_client, g_app.hardcore ? 1 : 0);
 	rc_client_set_unofficial_enabled(s_client, g_app.unofficial ? 1 : 0);
+	/* Hash the file on the card. The in-memory copy is not the cart image
+	   RetroAchievements knows, so the lookup came back unknown. */
+	app_set_status("RA: hashing…");
 	rc_client_begin_identify_and_load_game(s_client, RC_CONSOLE_GAMEBOY_ADVANCE,
-		path, rom, romSize, load_cb, NULL);
+		path, NULL, 0, load_cb, NULL);
 }
 
 void ra_unload_game(void) {

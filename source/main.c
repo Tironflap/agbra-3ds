@@ -143,11 +143,13 @@ static void tick_play(u32 down, u32 held) {
 		emu_release_rom();
 	}
 
-	int frames = g_app.fastForward ? 3 : 1;
-	for (int i = 0; i < frames; i++) {
-		emu_run_frame();
-		ra_frame();
-	}
+	int extra = g_app.fastForward ? 3 : 0;
+	u64 t0 = osGetTime();
+	emu_run_frame();
+	int ms = (int)(osGetTime() - t0);
+	for (int i = 0; i < extra; i++) emu_run_frame();
+	emu_note_frame_ms(ms);
+	ra_frame();
 	emu_audio_pump();
 }
 

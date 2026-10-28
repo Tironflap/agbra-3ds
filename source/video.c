@@ -2,9 +2,19 @@
 #include "app.h"
 
 #include <3ds.h>
+#include <stdio.h>
 #include <string.h>
 
 static uint16_t* s_top = NULL;
+static int s_fps = 0;
+static int s_fpsFrames = 0;
+static int s_skip = 0;
+static u64 s_fpsT = 0;
+static u64 s_presentMs = 0;
+
+void video_set_skip(int skip) {
+	s_skip = skip;
+}
 
 /* RGB565 */
 #define RGB(r, g, b) ((uint16_t)(((r) >> 3) << 11 | ((g) >> 2) << 5 | ((b) >> 3)))
@@ -67,9 +77,7 @@ void video_present(const uint16_t* pixels, int stride) {
 				s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = src[sx];
 			}
 		}
-		return;
-	}
-
+	} else {
 	/* Column copy matches the 3DS framebuffer, so it stays in cache. */
 	int ox = (TOP_WIDTH - GBA_WIDTH) / 2;
 	int oy = (TOP_HEIGHT - GBA_HEIGHT) / 2;
@@ -80,6 +88,13 @@ void video_present(const uint16_t* pixels, int stride) {
 			*dst-- = *src;
 			src += stride;
 		}
+	}
+	}
+
+	if (s_fpsT) {
+		char hud[24];
+		snprintf(hud, sizeof(hud), "%d fps  skip %d", s_fps, s_skip < 0 ? 0 : s_skip);
+		video_overlay_text(8, 4, hud, 0xFFE0);
 	}
 }
 
@@ -189,8 +204,26 @@ void video_wipe(void) {
 }
 
 void video_flush(void) {
+	u64 now = osGetTime();
 	(void)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 	gfxFlushBuffers();
 	gfxSwapBuffers();
-	gspWaitForVBlank();
+	/* gpSP does not sit through another full vblank when the frame already
+	   ran long. Waiting anyway locks an old 3DS at half speed. */
+	if (s_presentMs == 0 || now - s_presentMs < 14) gspWaitForVBlank();
+	now = osGetTime();
+	if (s_fpsT == 0) s_fpsT = now;
+	s_fpsFrames++;
+	if (now - s_fpsT >= 1000) {
+		s_fps = s_fpsFrames;
+		s_fpsFrames = 0;
+		s_fpsT = now;
+	}
+	s_presentMs = now;
 }
+
+static int s_fps = 0;
+static int s_fpsFrames = 0;
+static int s_skip = 0;
+static u64 s_fpsT = 0;
+static u64 s_presentMs = 0;

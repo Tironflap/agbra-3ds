@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "config.h"
 #include "fs.h"
+#include "video.h"
 
 #include <3ds.h>
 #include <mgba/core/core.h>
@@ -253,22 +254,60 @@ bool emu_load(const char* path) {
 	return r == 2;
 }
 
+static int s_liveSkip = 0;
+
+static void emu_push_frameskip(int skip) {
+	if (skip < 0) skip = 0;
+	if (skip > 5) skip = 5;
+	if (!s_core || !s_config || skip == s_liveSkip) {
+		s_liveSkip = skip;
+		return;
+	}
+	s_liveSkip = skip;
+	s_core->opts.frameskip = skip;
+	mCoreConfigSetIntValue(&s_core->config, "frameskip", skip);
+	if (s_core->reloadConfigOption) s_core->reloadConfigOption(s_core, "frameskip", &s_core->config);
+	video_set_skip(skip);
+}
+
 void emu_apply_options(void) {
 	if (!s_core || !s_config) return;
 	int skip = g_cfg.frameskip;
 	if (skip < 0) {
 		bool new3ds = false;
 		APT_CheckNew3DS(&new3ds);
+		/* Old 3DS cannot draw every GBA frame. Start at 2 and let it climb. */
 		skip = new3ds ? 0 : 2;
 	}
 	if (skip > 5) skip = 5;
-	s_core->opts.frameskip = skip;
+	s_liveSkip = -1;
+	emu_push_frameskip(skip);
 
 	const char* idle = "remove";
 	if (g_cfg.accuracy <= 0) idle = "detect";
 	else if (g_cfg.accuracy >= 2) idle = "ignore";
 	mCoreConfigSetValue(&s_core->config, "idleOptimization", idle);
 	if (s_core->loadConfig) s_core->loadConfig(s_core, &s_core->config);
+}
+
+void emu_note_frame_ms(int ms) {
+	if (g_cfg.frameskip >= 0) return;
+	static int cool = 0;
+	if (ms > 18 && s_liveSkip < 5) {
+		cool = 0;
+		emu_push_frameskip(s_liveSkip + 1);
+	} else if (ms < 12 && s_liveSkip > 0) {
+		if (++cool >= 45) {
+			cool = 0;
+			emu_push_frameskip(s_liveSkip - 1);
+		}
+	} else {
+		cool = 0;
+	}
+}
+
+int emu_frameskip(void) {
+	return s_liveSkip < 0 ? 0 : s_liveSkip;
 }
 
 void emu_run_frame(void) {

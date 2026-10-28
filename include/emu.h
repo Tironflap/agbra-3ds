@@ -24,6 +24,8 @@ bool emu_save_state(int slot);
 bool emu_load_state(int slot);
 void emu_flush_save(void);
 void emu_apply_options(void);
+void emu_note_frame_ms(int ms);
+int emu_frameskip(void);
 const uint8_t* emu_rom_data(size_t* size);
 void emu_release_rom(void);
 const char* emu_rom_path(void);
