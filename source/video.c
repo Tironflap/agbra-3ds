@@ -221,9 +221,3 @@ void video_flush(void) {
 	}
 	s_presentMs = now;
 }
-
-static int s_fps = 0;
-static int s_fpsFrames = 0;
-static int s_skip = 0;
-static u64 s_fpsT = 0;
-static u64 s_presentMs = 0;
