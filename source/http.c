@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
@@ -28,6 +31,7 @@ typedef struct HttpJob {
 	size_t bodyLen;
 	int status;
 	volatile int done;
+	volatile int running;
 	volatile int inUse;
 } HttpJob;
 
@@ -35,6 +39,8 @@ static HttpJob s_jobs[HTTP_MAX_JOBS];
 static LightLock s_lock;
 static u32* s_soc;
 static int s_net;
+static Thread s_thread;
+static volatile int s_run;
 
 static int parse_url(const char* url, char* host, size_t hostLen, char* path, size_t pathLen, int* https) {
 	const char* p = url;
@@ -132,6 +138,11 @@ static int http_download(HttpJob* job) {
 		mbedtls_net_free(&net);
 		return -2;
 	}
+	struct timeval tv;
+	tv.tv_sec = 8;
+	tv.tv_usec = 0;
+	setsockopt(net.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	setsockopt(net.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
 	if (https) {
 		if (mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -182,7 +193,11 @@ static int http_download(HttpJob* job) {
 	char* raw = NULL;
 	size_t rawLen = 0, rawCap = 0;
 	unsigned char tmp[1024];
+	int contentLength = -1;
+	size_t headerEnd = 0;
+	u64 started = osGetTime();
 	for (;;) {
+		if (osGetTime() - started > 12000) break;
 		int n;
 		if (https) {
 			n = mbedtls_ssl_read(&ssl, tmp, sizeof(tmp));
@@ -195,6 +210,22 @@ static int http_download(HttpJob* job) {
 			if (n <= 0) break;
 		}
 		if (append_bytes(&raw, &rawLen, &rawCap, (char*)tmp, (size_t)n) != 0) break;
+		if (!headerEnd) {
+			char* split = strstr(raw, "\r\n\r\n");
+			if (split) {
+				headerEnd = (size_t)(split + 4 - raw);
+				char* line = raw;
+				while (line && line < raw + headerEnd) {
+					char* eol = strstr(line, "\r\n");
+					if (!eol || eol >= raw + headerEnd) break;
+					if (strncasecmp(line, "Content-Length:", 15) == 0) {
+						contentLength = atoi(line + 15);
+					}
+					line = eol + 2;
+				}
+			}
+		}
+		if (headerEnd && contentLength >= 0 && rawLen >= headerEnd + (size_t)contentLength) break;
 		if (rawLen >= HTTP_BODY_MAX) break;
 	}
 
@@ -237,6 +268,30 @@ fail:
 	return -2;
 }
 
+static void http_thread(void* arg) {
+	(void)arg;
+	while (s_run) {
+		HttpJob* job = NULL;
+		LightLock_Lock(&s_lock);
+		for (int i = 0; i < HTTP_MAX_JOBS; i++) {
+			if (s_jobs[i].inUse && !s_jobs[i].done && !s_jobs[i].running && s_jobs[i].url[0]) {
+				s_jobs[i].running = 1;
+				job = &s_jobs[i];
+				break;
+			}
+		}
+		LightLock_Unlock(&s_lock);
+		if (!job) {
+			svcSleepThread(20000000LL);
+			continue;
+		}
+		http_download(job);
+		LightLock_Lock(&s_lock);
+		job->done = 1;
+		LightLock_Unlock(&s_lock);
+	}
+}
+
 bool http_init(void) {
 	memset(s_jobs, 0, sizeof(s_jobs));
 	LightLock_Init(&s_lock);
@@ -249,10 +304,17 @@ bool http_init(void) {
 		return false;
 	}
 	s_net = 1;
+	s_run = 1;
+	s_thread = threadCreate(http_thread, NULL, 96 * 1024, 0x30, -1, false);
 	return true;
 }
 
 void http_exit(void) {
+	s_run = 0;
+	if (s_thread) {
+		if (R_SUCCEEDED(threadJoin(s_thread, 15000000000LL))) threadFree(s_thread);
+		s_thread = NULL;
+	}
 	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
 		free(s_jobs[i].post);
 		free(s_jobs[i].body);
@@ -294,23 +356,38 @@ void http_server_call(const rc_api_request_t* request,
 }
 
 void http_poll(void) {
-	HttpJob* pending = NULL;
+	HttpJob done[HTTP_MAX_JOBS];
+	int nDone = 0;
 	LightLock_Lock(&s_lock);
 	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
-		if (s_jobs[i].inUse && !s_jobs[i].done && s_jobs[i].url[0]) {
-			pending = &s_jobs[i];
-			break;
-		}
+		if (!s_jobs[i].inUse || !s_jobs[i].done) continue;
+		done[nDone++] = s_jobs[i];
+		memset(&s_jobs[i], 0, sizeof(s_jobs[i]));
 	}
 	LightLock_Unlock(&s_lock);
-	if (pending) {
-		http_download(pending);
-		pending->done = 1;
+
+	/* No worker (thread failed to start): one request, still capped at 12s. */
+	if (!s_thread) {
+		HttpJob* pending = NULL;
+		LightLock_Lock(&s_lock);
+		for (int i = 0; i < HTTP_MAX_JOBS; i++) {
+			if (s_jobs[i].inUse && !s_jobs[i].done && !s_jobs[i].running && s_jobs[i].url[0]) {
+				s_jobs[i].running = 1;
+				pending = &s_jobs[i];
+				break;
+			}
+		}
+		LightLock_Unlock(&s_lock);
+		if (pending) {
+			http_download(pending);
+			LightLock_Lock(&s_lock);
+			pending->done = 1;
+			LightLock_Unlock(&s_lock);
+		}
 	}
 
-	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
-		HttpJob* job = &s_jobs[i];
-		if (!job->inUse || !job->done) continue;
+	for (int i = 0; i < nDone; i++) {
+		HttpJob* job = &done[i];
 		rc_api_server_response_t resp;
 		memset(&resp, 0, sizeof(resp));
 		resp.body = job->body;
@@ -319,6 +396,5 @@ void http_poll(void) {
 		if (job->callback) job->callback(&resp, job->callback_data);
 		free(job->post);
 		free(job->body);
-		memset(job, 0, sizeof(*job));
 	}
 }
