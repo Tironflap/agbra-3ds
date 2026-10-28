@@ -40,6 +40,10 @@ bool audio_init(void) {
 	return true;
 }
 
+bool audio_ready(void) {
+	return s_ok;
+}
+
 void audio_exit(void) {
 	if (!s_ok) return;
 	ndspChnWaveBufClear(0);

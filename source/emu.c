@@ -77,14 +77,16 @@ const char* emu_rom_path(void) {
 void emu_unload(void) {
 	if (s_core) {
 		emu_flush_save();
+		/* The core closes the save VFile inside deinit. Closing it again
+		   frees the buffer before the write is safe to trust. */
+		s_savVf = NULL;
 		if (s_config) {
 			mCoreConfigDeinit(&s_core->config);
 			s_config = false;
 		}
 		s_core->deinit(s_core);
 		s_core = NULL;
-	}
-	if (s_savVf) {
+	} else if (s_savVf) {
 		s_savVf->close(s_savVf);
 		s_savVf = NULL;
 	}
@@ -303,6 +305,9 @@ void emu_apply_options(void) {
 	if (g_cfg.accuracy >= 2) idle = "ignore";
 	else if (g_cfg.accuracy <= 0 || (g_cfg.frameskip < 0 && s_old3ds)) idle = "detect";
 	mCoreConfigSetValue(&s_core->config, "idleOptimization", idle);
+	/* opts is zeroed. loadConfig copies volume straight through, so 0 mutes the GBA. */
+	s_core->opts.volume = 0x100;
+	s_core->opts.mute = false;
 	if (s_core->loadConfig) s_core->loadConfig(s_core, &s_core->config);
 }
 
@@ -369,14 +374,20 @@ void emu_audio_pump(void) {
 void emu_flush_save(void) {
 	if (!s_savVf || !s_savePath[0]) return;
 	size_t n = (size_t)s_savVf->size(s_savVf);
-	if (!n) return;
+	if (!n || n > 128 * 1024) return;
 	void* p = s_savVf->map(s_savVf, n, 0);
 	if (!p) return;
+	fs_mkdir_p(AGBRA_SAVES_DIR);
 	int fd = open(s_savePath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 	if (fd >= 0) {
-		ssize_t wr = write(fd, p, n);
+		size_t off = 0;
+		while (off < n) {
+			ssize_t wr = write(fd, (uint8_t*)p + off, n - off);
+			if (wr <= 0) break;
+			off += (size_t)wr;
+		}
+		fsync(fd);
 		close(fd);
-		(void)wr;
 	}
 	s_savVf->unmap(s_savVf, p, n);
 }

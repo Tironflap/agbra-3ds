@@ -149,9 +149,9 @@ static void tick_play(u32 down, u32 held) {
 	for (int i = 0; i < bursts; i++) {
 		if (emu_run_frame()) drew = true;
 		ra_frame();
+		emu_audio_pump();
 		video_emu_frame();
 	}
-	emu_audio_pump();
 
 	if (drew) {
 		video_present(emu_pixels(), emu_stride());
@@ -182,8 +182,11 @@ static void tick_play(u32 down, u32 held) {
 			deadline = now;
 		}
 		deadline += (u64)target;
-		int fps = video_fps();
-		if (fps >= 35 && fps <= 60) audio_set_rate(32768.0f * (float)fps / 60.0f);
+		static int saveTick = 0;
+		if (++saveTick >= 180) {
+			saveTick = 0;
+			emu_flush_save();
+		}
 	}
 }
 
@@ -212,6 +215,7 @@ int main(int argc, char** argv) {
 	g_app.unofficial = g_cfg.unofficial;
 	g_app.scale = (ScaleMode)g_cfg.scale;
 	app_set_status("Put .gba files in sdmc:/roms/gba");
+	if (!audio_ready()) app_set_status("No sound. Dump dspfirm.cdc with the DSP1 app.");
 
 	if (!emu_init()) {
 		app_set_status("mGBA failed to init. Run ./fetch-deps.sh then rebuild.");
