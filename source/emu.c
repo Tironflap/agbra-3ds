@@ -255,15 +255,33 @@ bool emu_load(const char* path) {
 }
 
 static int s_liveSkip = 0;
+static int s_untilDraw = 0;
+static bool s_old3ds = true;
+static bool s_known3ds = false;
+
+static void emu_check_3ds(void) {
+	if (s_known3ds) return;
+	bool newer = false;
+	APT_CheckNew3DS(&newer);
+	s_old3ds = !newer;
+	s_known3ds = true;
+}
+
+int emu_target_ms(void) {
+	emu_check_3ds();
+	/* 50 Hz on an old 3DS. A New 3DS can hold 60. */
+	return s_old3ds ? 20 : 16;
+}
 
 static void emu_push_frameskip(int skip) {
 	if (skip < 0) skip = 0;
-	if (skip > 5) skip = 5;
+	if (skip > 9) skip = 9;
 	if (!s_core || !s_config || skip == s_liveSkip) {
 		s_liveSkip = skip;
 		return;
 	}
 	s_liveSkip = skip;
+	s_untilDraw = 0;
 	s_core->opts.frameskip = skip;
 	mCoreConfigSetIntValue(&s_core->config, "frameskip", skip);
 	if (s_core->reloadConfigOption) s_core->reloadConfigOption(s_core, "frameskip", &s_core->config);
@@ -272,20 +290,18 @@ static void emu_push_frameskip(int skip) {
 
 void emu_apply_options(void) {
 	if (!s_core || !s_config) return;
+	emu_check_3ds();
 	int skip = g_cfg.frameskip;
-	if (skip < 0) {
-		bool new3ds = false;
-		APT_CheckNew3DS(&new3ds);
-		/* Old 3DS cannot draw every GBA frame. Start at 2 and let it climb. */
-		skip = new3ds ? 0 : 2;
-	}
-	if (skip > 5) skip = 5;
+	if (skip < 0) skip = s_old3ds ? 4 : 0;
+	if (skip > 9) skip = 9;
 	s_liveSkip = -1;
 	emu_push_frameskip(skip);
 
+	/* Hardware keeps idle loops. Anything else on an old 3DS detects them,
+	   which is what gets Pokemon-class games near full speed. */
 	const char* idle = "remove";
-	if (g_cfg.accuracy <= 0) idle = "detect";
-	else if (g_cfg.accuracy >= 2) idle = "ignore";
+	if (g_cfg.accuracy >= 2) idle = "ignore";
+	else if (g_cfg.accuracy <= 0 || (g_cfg.frameskip < 0 && s_old3ds)) idle = "detect";
 	mCoreConfigSetValue(&s_core->config, "idleOptimization", idle);
 	if (s_core->loadConfig) s_core->loadConfig(s_core, &s_core->config);
 }
@@ -293,11 +309,13 @@ void emu_apply_options(void) {
 void emu_note_frame_ms(int ms) {
 	if (g_cfg.frameskip >= 0) return;
 	static int cool = 0;
-	if (ms > 18 && s_liveSkip < 5) {
+	int hi = emu_target_ms() + 1;
+	int lo = emu_target_ms() - 4;
+	if (ms > hi && s_liveSkip < 9) {
 		cool = 0;
 		emu_push_frameskip(s_liveSkip + 1);
-	} else if (ms < 12 && s_liveSkip > 0) {
-		if (++cool >= 45) {
+	} else if (ms < lo && s_liveSkip > 0) {
+		if (++cool >= 20) {
 			cool = 0;
 			emu_push_frameskip(s_liveSkip - 1);
 		}
@@ -310,8 +328,16 @@ int emu_frameskip(void) {
 	return s_liveSkip < 0 ? 0 : s_liveSkip;
 }
 
-void emu_run_frame(void) {
-	if (s_core) s_core->runFrame(s_core);
+bool emu_run_frame(void) {
+	if (!s_core) return false;
+	/* Match mGBA: draw, then skip `frameskip` frames. Copying a frame the
+	   renderer never wrote is pure waste on an old 3DS. */
+	bool draw = s_liveSkip <= 0 || s_untilDraw <= 0;
+	s_core->runFrame(s_core);
+	if (s_liveSkip <= 0) s_untilDraw = 0;
+	else if (draw) s_untilDraw = s_liveSkip;
+	else s_untilDraw--;
+	return draw;
 }
 
 void emu_reset(void) {

@@ -68,27 +68,47 @@ void video_present(const uint16_t* pixels, int stride) {
 			ox = (TOP_WIDTH - dw) / 2;
 			oy = 0;
 		}
+		/* One divide per row and per column, not per pixel. The ARM11 has no divider. */
+		static int sxTab[TOP_WIDTH];
+		static int syTab[TOP_HEIGHT];
+		static int tabW = -1;
+		static int tabH = -1;
+		if (tabW != dw) {
+			for (int x = 0; x < dw; x++) sxTab[x] = x * GBA_WIDTH / dw;
+			tabW = dw;
+		}
+		if (tabH != dh) {
+			for (int y = 0; y < dh; y++) syTab[y] = y * GBA_HEIGHT / dh;
+			tabH = dh;
+		}
 		for (int y = 0; y < dh; y++) {
-			int sy = y * GBA_HEIGHT / dh;
-			const uint16_t* src = pixels + sy * stride;
+			const uint16_t* src = pixels + syTab[y] * stride;
 			int dy = oy + y;
+			int base = TOP_HEIGHT - 1 - dy;
 			for (int x = 0; x < dw; x++) {
-				int sx = x * GBA_WIDTH / dw;
-				s_top[(ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - dy)] = src[sx];
+				s_top[(ox + x) * TOP_HEIGHT + base] = src[sxTab[x]];
 			}
 		}
 	} else {
-	/* Column copy matches the 3DS framebuffer, so it stays in cache. */
-	int ox = (TOP_WIDTH - GBA_WIDTH) / 2;
-	int oy = (TOP_HEIGHT - GBA_HEIGHT) / 2;
-	for (int x = 0; x < GBA_WIDTH; x++) {
-		const uint16_t* src = pixels + x;
-		uint16_t* dst = s_top + (ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - oy);
-		for (int y = 0; y < GBA_HEIGHT; y++) {
-			*dst-- = *src;
-			src += stride;
+		int ox = (TOP_WIDTH - GBA_WIDTH) / 2;
+		int oy = (TOP_HEIGHT - GBA_HEIGHT) / 2;
+		for (int x = 0; x < GBA_WIDTH; x++) {
+			const uint16_t* src = pixels + x;
+			uint16_t* dst = s_top + (ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - oy);
+			int y = 0;
+			for (; y + 3 < GBA_HEIGHT; y += 4) {
+				dst[0] = src[0];
+				dst[-1] = src[stride];
+				dst[-2] = src[stride * 2];
+				dst[-3] = src[stride * 3];
+				dst -= 4;
+				src += stride * 4;
+			}
+			for (; y < GBA_HEIGHT; y++) {
+				*dst-- = *src;
+				src += stride;
+			}
 		}
-	}
 	}
 
 	if (s_fpsT) {
@@ -203,15 +223,14 @@ void video_wipe(void) {
 	s_top = NULL;
 }
 
-void video_flush(void) {
-	u64 now = osGetTime();
+void video_flush_nosync(void) {
 	(void)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 	gfxFlushBuffers();
 	gfxSwapBuffers();
-	/* gpSP does not sit through another full vblank when the frame already
-	   ran long. Waiting anyway locks an old 3DS at half speed. */
-	if (s_presentMs == 0 || now - s_presentMs < 14) gspWaitForVBlank();
-	now = osGetTime();
+}
+
+void video_emu_frame(void) {
+	u64 now = osGetTime();
 	if (s_fpsT == 0) s_fpsT = now;
 	s_fpsFrames++;
 	if (now - s_fpsT >= 1000) {
@@ -219,5 +238,14 @@ void video_flush(void) {
 		s_fpsFrames = 0;
 		s_fpsT = now;
 	}
-	s_presentMs = now;
+}
+
+int video_fps(void) {
+	return s_fps;
+}
+
+void video_flush(void) {
+	video_flush_nosync();
+	gspWaitForVBlank();
+	s_presentMs = osGetTime();
 }

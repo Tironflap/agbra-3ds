@@ -143,15 +143,51 @@ static void tick_play(u32 down, u32 held) {
 		emu_release_rom();
 	}
 
-	int extra = g_app.fastForward ? 3 : 0;
+	int bursts = g_app.fastForward ? 4 : 1;
+	bool drew = false;
 	u64 t0 = osGetTime();
-	emu_run_frame();
-	int ms = (int)(osGetTime() - t0);
-	for (int i = 0; i < extra; i++) emu_run_frame();
-	emu_note_frame_ms(ms);
-	ra_frame();
+	for (int i = 0; i < bursts; i++) {
+		if (emu_run_frame()) drew = true;
+		ra_frame();
+		video_emu_frame();
+	}
 	emu_audio_pump();
+
+	if (drew) {
+		video_present(emu_pixels(), emu_stride());
+		overlay_draw();
+		video_flush_nosync();
+	}
+	int work = (int)(osGetTime() - t0);
+
+	if (!g_app.fastForward) {
+		static int acc = 0;
+		static int accN = 0;
+		static u64 deadline = 0;
+		acc += work;
+		if (++accN >= emu_frameskip() + 1) {
+			emu_note_frame_ms(acc / accN);
+			acc = 0;
+			accN = 0;
+		}
+		int target = emu_target_ms();
+		u64 now = osGetTime();
+		if (deadline == 0 || now + 100 < deadline) deadline = now;
+		if (now < deadline) {
+			int slack = (int)(deadline - now);
+			if (slack >= 6) svcSleepThread((u64)(slack - 2) * 1000000ULL);
+			while (osGetTime() < deadline) {
+			}
+		} else if (now > deadline + (u64)target) {
+			deadline = now;
+		}
+		deadline += (u64)target;
+		int fps = video_fps();
+		if (fps >= 35 && fps <= 60) audio_set_rate(32768.0f * (float)fps / 60.0f);
+	}
 }
+
+static int s_netTick = 0;
 
 int main(int argc, char** argv) {
 	(void)argc;
@@ -194,7 +230,8 @@ int main(int argc, char** argv) {
 			break;
 		}
 
-		if (!g_app.loading) {
+		bool playing = g_app.screen == APP_PLAYING && emu_loaded() && !g_app.paused && !g_app.loading;
+		if (!g_app.loading && (!playing || (s_netTick++ & 7) == 0)) {
 			http_poll();
 			ra_poll_http();
 			ra_idle();
@@ -221,9 +258,6 @@ int main(int argc, char** argv) {
 
 		if (g_app.screen == APP_PLAYING && emu_loaded() && !g_app.paused) {
 			tick_play(down, held);
-			video_present(emu_pixels(), emu_stride());
-			overlay_draw();
-			video_flush();
 		} else {
 			if (g_app.screen == APP_PLAYING && emu_loaded()) {
 				video_present(emu_pixels(), emu_stride());
