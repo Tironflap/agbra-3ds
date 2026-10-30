@@ -35,26 +35,32 @@ static inline void plot(int x, int y, uint16_t c) {
 	s_top[x * TOP_HEIGHT + (TOP_HEIGHT - 1 - y)] = c;
 }
 
-void video_present(const uint16_t* pixels, int stride) {
+void video_present(const uint16_t* pixels, int width, int height, int stride) {
 	s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
 	if (!s_top) return;
 
+	if (width < 1) width = GBA_WIDTH;
+	if (height < 1) height = GBA_HEIGHT;
+	if (stride < width) stride = width;
+
 	static int clearedMode = -1;
+	static int clearedW = -1;
 	static int clearedFrames = 0;
 	int mode = (int)g_app.scale;
-	if (clearedMode != mode) {
+	if (clearedMode != mode || clearedW != width) {
 		clearedMode = mode;
+		clearedW = width;
 		clearedFrames = 0;
 	}
 	if (clearedFrames < 2) {
 		memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
 		clearedFrames++;
 	}
-	if (!pixels || stride <= 0) return;
+	if (!pixels) return;
 
 	if (mode != (int)SCALE_1X) {
-		int dw = GBA_WIDTH;
-		int dh = GBA_HEIGHT;
+		int dw = width;
+		int dh = height;
 		int ox = (TOP_WIDTH - dw) / 2;
 		int oy = (TOP_HEIGHT - dh) / 2;
 		if (mode == (int)SCALE_FILL) {
@@ -73,13 +79,17 @@ void video_present(const uint16_t* pixels, int stride) {
 		static int syTab[TOP_HEIGHT];
 		static int tabW = -1;
 		static int tabH = -1;
-		if (tabW != dw) {
-			for (int x = 0; x < dw; x++) sxTab[x] = x * GBA_WIDTH / dw;
+		static int tabSrcW = -1;
+		static int tabSrcH = -1;
+		if (tabW != dw || tabSrcW != width) {
+			for (int x = 0; x < dw; x++) sxTab[x] = x * width / dw;
 			tabW = dw;
+			tabSrcW = width;
 		}
-		if (tabH != dh) {
-			for (int y = 0; y < dh; y++) syTab[y] = y * GBA_HEIGHT / dh;
+		if (tabH != dh || tabSrcH != height) {
+			for (int y = 0; y < dh; y++) syTab[y] = y * height / dh;
 			tabH = dh;
+			tabSrcH = height;
 		}
 		for (int y = 0; y < dh; y++) {
 			const uint16_t* src = pixels + syTab[y] * stride;
@@ -90,13 +100,13 @@ void video_present(const uint16_t* pixels, int stride) {
 			}
 		}
 	} else {
-		int ox = (TOP_WIDTH - GBA_WIDTH) / 2;
-		int oy = (TOP_HEIGHT - GBA_HEIGHT) / 2;
-		for (int x = 0; x < GBA_WIDTH; x++) {
+		int ox = (TOP_WIDTH - width) / 2;
+		int oy = (TOP_HEIGHT - height) / 2;
+		for (int x = 0; x < width; x++) {
 			const uint16_t* src = pixels + x;
 			uint16_t* dst = s_top + (ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - oy);
 			int y = 0;
-			for (; y + 3 < GBA_HEIGHT; y += 4) {
+			for (; y + 3 < height; y += 4) {
 				dst[0] = src[0];
 				dst[-1] = src[stride];
 				dst[-2] = src[stride * 2];
@@ -104,7 +114,7 @@ void video_present(const uint16_t* pixels, int stride) {
 				dst -= 4;
 				src += stride * 4;
 			}
-			for (; y < GBA_HEIGHT; y++) {
+			for (; y < height; y++) {
 				*dst-- = *src;
 				src += stride;
 			}

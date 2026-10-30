@@ -19,11 +19,12 @@ static rc_client_t* s_client = NULL;
 static rc_client_achievement_list_t* s_list = NULL;
 static const rc_client_achievement_t* s_flat[RA_MAX_LIST];
 static int s_flatCount = 0;
+static uint32_t s_console = RC_CONSOLE_GAMEBOY_ADVANCE;
 
 static uint32_t RC_CCONV ra_read_memory(uint32_t address, uint8_t* buffer, uint32_t num_bytes, rc_client_t* client) {
 	(void)client;
 	if (!emu_loaded() || !buffer || !num_bytes) return 0;
-	const rc_memory_regions_t* regions = rc_console_memory_regions(RC_CONSOLE_GAMEBOY_ADVANCE);
+	const rc_memory_regions_t* regions = rc_console_memory_regions(s_console);
 	uint32_t done = 0;
 	while (done < num_bytes) {
 		uint32_t addr = address + done;
@@ -189,7 +190,8 @@ void ra_load_game(const char* path, const uint8_t* rom, size_t romSize) {
 	/* Hash the file on the card. The in-memory copy is not the cart image
 	   RetroAchievements knows, so the lookup came back unknown. */
 	app_set_status("RA: hashing…");
-	rc_client_begin_identify_and_load_game(s_client, RC_CONSOLE_GAMEBOY_ADVANCE,
+	s_console = (uint32_t)emu_ra_console();
+	rc_client_begin_identify_and_load_game(s_client, s_console,
 		path, NULL, 0, load_cb, NULL);
 }
 

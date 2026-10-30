@@ -9,11 +9,13 @@
 #include <mgba/core/core.h>
 #include <mgba-util/audio-buffer.h>
 #include <mgba-util/vfs.h>
+#include "rc_consoles.h"
 
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 extern uint32_t* romBuffer;
@@ -29,6 +31,25 @@ static char s_savePath[512];
 static struct VFile* s_savVf = NULL;
 static bool s_loaded = false;
 static bool s_config = false;
+static int s_vw = GBA_WIDTH;
+static int s_vh = GBA_HEIGHT;
+static int s_stride = GBA_WIDTH;
+
+static int emu_is_gb(void) {
+	return s_core && s_core->platform && s_core->platform(s_core) == mPLATFORM_GB;
+}
+
+static int rom_is_gbc(const char* path) {
+	const char* dot = strrchr(path, '.');
+	if (dot && strcasecmp(dot, ".gbc") == 0) return 1;
+	if (!dot || strcasecmp(dot, ".gb") != 0) return 0;
+	FILE* f = fopen(path, "rb");
+	if (!f) return 0;
+	int flag = 0;
+	if (fseek(f, 0x143, SEEK_SET) == 0) flag = fgetc(f);
+	fclose(f);
+	return flag == 0x80 || flag == 0xC0;
+}
 
 static void free_rom_copy(void) {
 	/* Points at romBuffer, which lives until the process exits. */
@@ -37,7 +58,7 @@ static void free_rom_copy(void) {
 }
 
 bool emu_init(void) {
-	s_pixels = linearMemAlign((size_t)GBA_WIDTH * GBA_HEIGHT * sizeof(mColor), 0x80);
+	s_pixels = linearMemAlign(256 * 224 * sizeof(mColor), 0x80);
 	return s_pixels != NULL;
 }
 
@@ -58,7 +79,21 @@ const uint16_t* emu_pixels(void) {
 }
 
 int emu_stride(void) {
-	return GBA_WIDTH;
+	return s_stride;
+}
+
+int emu_width(void) {
+	return s_vw;
+}
+
+int emu_height(void) {
+	return s_vh;
+}
+
+int emu_ra_console(void) {
+	if (!emu_is_gb()) return RC_CONSOLE_GAMEBOY_ADVANCE;
+	if (rom_is_gbc(s_path)) return RC_CONSOLE_GAMEBOY_COLOR;
+	return RC_CONSOLE_GAMEBOY;
 }
 
 const uint8_t* emu_rom_data(size_t* size) {
@@ -133,7 +168,7 @@ int emu_load_pump(void) {
 	case 1:
 		s_core = mCoreFind(s_path);
 		if (!s_core) {
-			snprintf(s_phase, sizeof(s_phase), "fail: not a GBA ROM");
+			snprintf(s_phase, sizeof(s_phase), "fail: not a ROM");
 			s_step = 0;
 			return 0;
 		}
@@ -160,7 +195,16 @@ int emu_load_pump(void) {
 		snprintf(s_phase, sizeof(s_phase), "next: video buffer");
 		return 1;
 	case 3:
-		s_core->setVideoBuffer(s_core, s_pixels, GBA_WIDTH);
+		if (emu_is_gb()) {
+			s_vw = 160;
+			s_vh = 144;
+			s_stride = 160;
+		} else {
+			s_vw = GBA_WIDTH;
+			s_vh = GBA_HEIGHT;
+			s_stride = GBA_WIDTH;
+		}
+		s_core->setVideoBuffer(s_core, s_pixels, (size_t)s_stride);
 		s_step = 4;
 		snprintf(s_phase, sizeof(s_phase), "next: audio buffer");
 		return 1;
@@ -186,20 +230,30 @@ int emu_load_pump(void) {
 		s_step = 7;
 		snprintf(s_phase, sizeof(s_phase), "next: bios");
 		return 1;
-	case 7:
-		if (fs_exists(AGBRA_BIOS_PATH)) {
-			struct VFile* bios = VFileOpen(AGBRA_BIOS_PATH, O_RDONLY);
-			if (bios) s_core->loadBIOS(s_core, bios, 0);
+	case 7: {
+		const char* biosPath = NULL;
+		if (emu_is_gb()) biosPath = rom_is_gbc(s_path) ? AGBRA_GBC_BIOS_PATH : AGBRA_GB_BIOS_PATH;
+		else biosPath = AGBRA_BIOS_PATH;
+		if (biosPath && fs_exists(biosPath)) {
+			struct VFile* bios = VFileOpen(biosPath, O_RDONLY);
+			if (bios && !s_core->loadBIOS(s_core, bios, 0)) bios->close(bios);
 		}
 		s_step = 8;
 		snprintf(s_phase, sizeof(s_phase), "next: save");
 		return 1;
+	}
 	case 8: {
 		char stem[256];
 		uint8_t* data = NULL;
 		size_t sz = 0;
 		app_stem(s_path, stem, sizeof(stem));
-		snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
+		if (emu_is_gb()) {
+			const char* dot = strrchr(s_path, '.');
+			if (!dot) dot = "";
+			snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s%s.sav", stem, dot);
+		} else {
+			snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
+		}
 		int sfd = open(s_savePath, O_RDONLY);
 		if (sfd >= 0) {
 			off_t n = lseek(sfd, 0, SEEK_END);
@@ -235,6 +289,18 @@ int emu_load_pump(void) {
 	case 10: {
 		emu_apply_options();
 		s_core->reset(s_core);
+		if (s_core->currentVideoSize) {
+			unsigned w = 0, h = 0;
+			s_core->currentVideoSize(s_core, &w, &h);
+			if (w >= 1 && h >= 1 && w <= 256 && h <= 224) {
+				s_vw = (int)w;
+				s_vh = (int)h;
+			}
+		}
+		{
+			unsigned rate = s_core->audioSampleRate(s_core);
+			if (rate) audio_set_rate((float)rate);
+		}
 		s_loaded = true;
 		s_step = 0;
 		snprintf(s_phase, sizeof(s_phase), "ready");
@@ -305,6 +371,7 @@ void emu_apply_options(void) {
 	if (g_cfg.accuracy >= 2) idle = "ignore";
 	else if (g_cfg.accuracy <= 0 || (g_cfg.frameskip < 0 && s_old3ds)) idle = "detect";
 	mCoreConfigSetValue(&s_core->config, "idleOptimization", idle);
+	if (emu_is_gb()) mCoreConfigSetIntValue(&s_core->config, "sgb.borders", 0);
 	/* opts is zeroed. loadConfig copies volume straight through, so 0 mutes the GBA. */
 	s_core->opts.volume = 0x100;
 	s_core->opts.mute = false;

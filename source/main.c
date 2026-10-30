@@ -154,7 +154,7 @@ static void tick_play(u32 down, u32 held) {
 	}
 
 	if (drew) {
-		video_present(emu_pixels(), emu_stride());
+		video_present(emu_pixels(), emu_width(), emu_height(), emu_stride());
 		overlay_draw();
 		video_flush_nosync();
 	}
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
 	g_app.hardcore = g_cfg.hardcore;
 	g_app.unofficial = g_cfg.unofficial;
 	g_app.scale = (ScaleMode)g_cfg.scale;
-	app_set_status("Put .gba files in sdmc:/roms/gba");
+	app_set_status("Put ROMs in sdmc:/roms/gba or sdmc:/roms/gb");
 	if (!audio_ready()) app_set_status("No sound. Dump dspfirm.cdc with the DSP1 app.");
 
 	if (!emu_init()) {
@@ -264,7 +264,7 @@ int main(int argc, char** argv) {
 			tick_play(down, held);
 		} else {
 			if (g_app.screen == APP_PLAYING && emu_loaded()) {
-				video_present(emu_pixels(), emu_stride());
+				video_present(emu_pixels(), emu_width(), emu_height(), emu_stride());
 				overlay_draw();
 			}
 			ui_handle(down, held);

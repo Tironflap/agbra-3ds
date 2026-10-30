@@ -116,7 +116,7 @@ static void draw_browser(void) {
 	cls();
 	header();
 	if (s_romCount == 0) {
-		printf("No ROMs found.\n\nPlace .gba files in:\n  sdmc:/roms/gba\n\nBIOS (recommended):\n  sdmc:/3ds/agbra/gba_bios.bin\n");
+		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba\n  sdmc:/roms/gb\n\nBIOS (optional):\n  sdmc:/3ds/agbra/gba_bios.bin\n  sdmc:/3ds/agbra/gb_bios.bin\n  sdmc:/3ds/agbra/gbc_bios.bin\n");
 	} else {
 		const int rows = 18;
 		if (g_app.browserIndex < g_app.browserTop) g_app.browserTop = g_app.browserIndex;
@@ -188,7 +188,9 @@ static void draw_settings(void) {
 	printf("Scale       %s\n", SCALE_NAME[g_app.scale]);
 	printf("Frameskip   %s\n", frameskip_label());
 	printf("Accuracy    %s\n", accuracy_label());
-	printf("BIOS        %s\n", fs_exists(AGBRA_BIOS_PATH) ? "found" : "missing (HLE)");
+	printf("GBA BIOS    %s\n", fs_exists(AGBRA_BIOS_PATH) ? "found" : "missing (HLE)");
+	printf("GB BIOS     %s\n", fs_exists(AGBRA_GB_BIOS_PATH) ? "found" : "missing (HLE)");
+	printf("GBC BIOS    %s\n", fs_exists(AGBRA_GBC_BIOS_PATH) ? "found" : "missing (HLE)");
 	footer_status();
 	printf("\nA hardcore  X unofficial  Y scale\nL frameskip  R accuracy  B back");
 }

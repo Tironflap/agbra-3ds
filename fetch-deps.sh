@@ -83,6 +83,45 @@ fi
 TOOLCHAIN="$MGBA_DIR/src/platform/3ds/CMakeToolchain.txt"
 [ -f "$TOOLCHAIN" ] || { echo "missing $TOOLCHAIN"; exit 1; }
 
+# The stock 3DS rules open the SD archive from userAppInit and mmap files.
+# Both crash the fs module when this core is linked into another homebrew.
+python3 - "$MGBA_DIR/src/platform/3ds/CMakeLists.txt" << 'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+t = p.read_text()
+t = t.replace(
+    "set(OS_DEFINES _GNU_SOURCE COLOR_16_BIT COLOR_5_6_5 FIXED_ROM_BUFFER IOAPI_NO_64)",
+    "set(OS_DEFINES _GNU_SOURCE COLOR_16_BIT COLOR_5_6_5 IOAPI_NO_64 ENABLE_VFS_FILE)",
+)
+t = t.replace(
+"""set(OS_SRC
+	${PROJECT_SOURCE_DIR}/src/util/memory.c
+	${CMAKE_CURRENT_SOURCE_DIR}/3ds-vfs.c
+	${CMAKE_CURRENT_SOURCE_DIR}/ctru-heap.c
+	${CMAKE_CURRENT_SOURCE_DIR}/socket.c
+	PARENT_SCOPE)""",
+"""set(OS_SRC
+	${PROJECT_SOURCE_DIR}/src/util/memory.c
+	${CMAKE_CURRENT_SOURCE_DIR}/socket.c
+	PARENT_SCOPE)""",
+)
+old = """if(ENABLE_VFS_3DS)
+	list(APPEND OS_DEFINES ENABLE_VFS_3DS)
+else()
+	list(APPEND OS_DEFINES ENABLE_VFS_FD)
+	list(APPEND VFS_SRC ${PROJECT_SOURCE_DIR}/src/util/vfs/vfs-fd.c ${PROJECT_SOURCE_DIR}/src/util/vfs/vfs-dirent.c)
+endif()"""
+new = """list(APPEND VFS_SRC ${PROJECT_SOURCE_DIR}/src/util/vfs/vfs-file.c ${PROJECT_SOURCE_DIR}/src/util/vfs/vfs-dirent.c)"""
+if "ENABLE_VFS_FILE" in t and "ctru-heap.c" not in t and "vfs-fd.c" not in t:
+    print("already patched", p)
+    raise SystemExit(0)
+if old not in t:
+    raise SystemExit("3DS CMakeLists.txt layout changed; not patching")
+t = t.replace(old, new)
+p.write_text(t)
+print("patched", p)
+PY
+
 BUILD="$MGBA_DIR/build-3ds"
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
@@ -113,7 +152,7 @@ set(USE_LZMA OFF CACHE BOOL "" FORCE)
 set(ENABLE_SCRIPTING OFF CACHE BOOL "" FORCE)
 set(ENABLE_DEBUGGERS OFF CACHE BOOL "" FORCE)
 set(ENABLE_GDB_STUB OFF CACHE BOOL "" FORCE)
-set(M_CORE_GB OFF CACHE BOOL "" FORCE)
+set(M_CORE_GB ON CACHE BOOL "" FORCE)
 set(M_CORE_GBA ON CACHE BOOL "" FORCE)
 set(USE_ZLIB ON CACHE BOOL "" FORCE)
 EOF

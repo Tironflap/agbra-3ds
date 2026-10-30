@@ -40,6 +40,7 @@ static int ends_with_ci(const char* name, const char* ext) {
 
 static int is_rom(const char* name) {
 	return ends_with_ci(name, ".gba") || ends_with_ci(name, ".agb") ||
+		ends_with_ci(name, ".gb") || ends_with_ci(name, ".gbc") ||
 		ends_with_ci(name, ".mb") || ends_with_ci(name, ".bin") ||
 		ends_with_ci(name, ".zip");
 }
@@ -69,7 +70,10 @@ static int scan_dir(const char* dir, RomEntry* list, int max, int count) {
 int fs_scan_roms(RomEntry* list, int max) {
 	int count = 0;
 	count = scan_dir(AGBRA_ROMS_DIR, list, max, count);
+	count = scan_dir(AGBRA_GB_ROMS_DIR, list, max, count);
+	count = scan_dir("sdmc:/roms/gbc", list, max, count);
 	count = scan_dir("sdmc:/gba", list, max, count);
+	count = scan_dir("sdmc:/gb", list, max, count);
 	count = scan_dir("sdmc:/roms", list, max, count);
 	count = scan_dir("sdmc:/3ds/agbra/roms", list, max, count);
 	if (count > 1) qsort(list, (size_t)count, sizeof(RomEntry), cmp_rom);
