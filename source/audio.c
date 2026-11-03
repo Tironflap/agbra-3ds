@@ -11,6 +11,12 @@ static ndspWaveBuf s_bufs[AUDIO_BUFFERS];
 static int16_t* s_pcm = NULL;
 static int s_index = 0;
 static bool s_ok = false;
+static float s_base = AUDIO_RATE;
+static float s_tempo = 1.0f;
+
+static void apply_rate(void) {
+	if (s_ok) ndspChnSetRate(0, s_base * s_tempo);
+}
 
 bool audio_init(void) {
 	if (ndspInit() != 0) return false;
@@ -54,7 +60,16 @@ void audio_exit(void) {
 }
 
 void audio_set_rate(float hz) {
-	if (s_ok && hz > 1.0f) ndspChnSetRate(0, hz);
+	if (hz > 1.0f) s_base = hz;
+	apply_rate();
+}
+
+void audio_set_tempo(float scale) {
+	if (scale < 0.45f) scale = 0.45f;
+	if (scale > 4.0f) scale = 4.0f;
+	if (scale > s_tempo - 0.02f && scale < s_tempo + 0.02f) return;
+	s_tempo = scale;
+	apply_rate();
 }
 
 void audio_clear(void) {

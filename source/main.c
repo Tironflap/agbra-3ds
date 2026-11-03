@@ -32,14 +32,11 @@ FS_Archive sdmcArchive;
 u32 __stacksize__ = 384 * 1024;
 
 void userAppInit(void) {
-	/* 16MB covers retail GBA carts and leaves RAM for audio and the core.
-	   A 32MB reservation was crashing the app once the ROM started. */
-	romBuffer = malloc(0x01000000);
-	if (romBuffer) romBufferSize = 0x01000000;
-	else {
-		romBuffer = malloc(0x00800000);
-		if (romBuffer) romBufferSize = 0x00800000;
-	}
+	/* libmgba is built without FIXED_ROM_BUFFER, so the cart is allocated
+	   to its real size at load. Reserving 16MB here pushed an old 3DS
+	   heap over the edge once the core and the audio buffers came up. */
+	romBuffer = NULL;
+	romBufferSize = 0;
 }
 
 static void quiet_log(struct mLogger* logger, int category, enum mLogLevel level,
@@ -110,6 +107,7 @@ char* app_swkbd(const char* hint, const char* initial, bool password, size_t max
 
 static void tick_play(u32 down, u32 held) {
 	if (input_menu_combo(held) && (down & (KEY_DOWN | KEY_START | KEY_SELECT))) {
+		emu_flush_save();
 		g_app.resumeScreen = APP_PLAYING;
 		g_app.screen = APP_MENU;
 		g_app.paused = true;
@@ -125,7 +123,8 @@ static void tick_play(u32 down, u32 held) {
 			if (emu_load_state(1)) app_toast("State loaded (slot 1)");
 			else app_toast("Load state failed");
 		}
-		g_app.fastForward = (held & KEY_ZL) != 0;
+		/* ZL is New 3DS only. The touch screen is the old-3DS turbo. */
+		g_app.fastForward = (held & (KEY_ZL | KEY_TOUCH)) != 0;
 	} else {
 		g_app.fastForward = false;
 	}
@@ -143,50 +142,57 @@ static void tick_play(u32 down, u32 held) {
 		emu_release_rom();
 	}
 
-	int bursts = g_app.fastForward ? 4 : 1;
-	bool drew = false;
+	/* One present per tick. Extra calls are frames the core did not draw
+	   (its frameskip), so the game clock can reach 60 while the LCD stays
+	   on a steady 30. */
+	int bursts = g_app.fastForward ? 4 : (emu_frameskip() + 1);
+	if (bursts < 1) bursts = 1;
 	u64 t0 = osGetTime();
+	int frames = 0;
 	for (int i = 0; i < bursts; i++) {
-		if (emu_run_frame()) drew = true;
+		if (!emu_run_frame()) break;
+		frames++;
 		ra_frame();
 		emu_audio_pump();
 		video_emu_frame();
 	}
 
-	if (drew) {
+	if (frames) {
 		video_present(emu_pixels(), emu_width(), emu_height(), emu_stride());
 		overlay_draw();
 		video_flush_nosync();
 	}
 	int work = (int)(osGetTime() - t0);
+	if (work < 1) work = 1;
 
 	if (!g_app.fastForward) {
-		static int acc = 0;
-		static int accN = 0;
-		static u64 deadline = 0;
-		acc += work;
-		if (++accN >= emu_frameskip() + 1) {
-			emu_note_frame_ms(acc / accN);
-			acc = 0;
-			accN = 0;
+		emu_note_frame_ms(work);
+		/* A pending vblank is a single event, not a count. One wait locks
+		   to 60 when the batch finished inside the frame. Two waits lock
+		   to 30 after the batch already crossed a vblank. */
+		if (emu_is_fast()) {
+			/* One vblank. A second wait would clamp a full-speed
+			   dynarec frame down to 30 Hz. */
+			gspWaitForVBlank();
+		} else if (work <= 14) {
+			gspWaitForVBlank();
+		} else if (work <= 30) {
+			gspWaitForVBlank();
+			gspWaitForVBlank();
+		} else {
+			gspWaitForVBlank();
 		}
-		int target = emu_target_ms();
-		u64 now = osGetTime();
-		if (deadline == 0 || now + 100 < deadline) deadline = now;
-		if (now < deadline) {
-			int slack = (int)(deadline - now);
-			if (slack >= 6) svcSleepThread((u64)(slack - 2) * 1000000ULL);
-			while (osGetTime() < deadline) {
-			}
-		} else if (now > deadline + (u64)target) {
-			deadline = now;
-		}
-		deadline += (u64)target;
+		int elapsed = (int)(osGetTime() - t0);
+		if (elapsed < 1) elapsed = 1;
+		float tempo = (frames * 1000.0f) / (elapsed * 59.7275f);
+		audio_set_tempo(tempo);
 		static int saveTick = 0;
-		if (++saveTick >= 180) {
+		if (++saveTick >= 300) {
 			saveTick = 0;
-			emu_flush_save();
+			emu_flush_save_soft();
 		}
+	} else {
+		audio_set_tempo(4.0f);
 	}
 }
 
@@ -202,6 +208,9 @@ int main(int argc, char** argv) {
 	/* gfxInit brings apt up. The 804 MHz request is ignored before that,
 	   which leaves a New 3DS at old-3DS speed and the game in slow motion. */
 	osSetSpeedupEnable(true);
+	/* Let the HTTP thread and the DSP share the system core. */
+	APT_SetAppCpuTimeLimit(30);
+	aptSetSleepAllowed(false);
 	ui_init();
 	audio_init();
 	http_init();

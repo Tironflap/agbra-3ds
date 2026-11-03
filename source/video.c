@@ -9,11 +9,16 @@ static uint16_t* s_top = NULL;
 static int s_fps = 0;
 static int s_fpsFrames = 0;
 static int s_skip = 0;
+static int s_dyn = 0;
 static u64 s_fpsT = 0;
 static u64 s_presentMs = 0;
 
 void video_set_skip(int skip) {
 	s_skip = skip;
+}
+
+void video_set_dyn(int on) {
+	s_dyn = on ? 1 : 0;
 }
 
 /* RGB565 */
@@ -33,6 +38,49 @@ void video_exit(void) {
 static inline void plot(int x, int y, uint16_t c) {
 	if ((unsigned)x >= TOP_WIDTH || (unsigned)y >= TOP_HEIGHT) return;
 	s_top[x * TOP_HEIGHT + (TOP_HEIGHT - 1 - y)] = c;
+}
+
+/* Gather a few source rows, then write framebuffer columns.
+   The 3DS top buffer is column-major, and the ARM11 data cache is 16KB
+   with no L2 on an old 3DS. Walking dest x in the inner loop misses
+   every pixel. A 16-row tile stays hot while the columns stream out. */
+static void blit_rect(const uint16_t* src, int sw, int sh, int stride,
+                       int dw, int dh, int ox, int oy, const int* sx, const int* sy) {
+	static uint16_t tile[16][TOP_WIDTH];
+	if (dw > TOP_WIDTH) dw = TOP_WIDTH;
+	if (dh > TOP_HEIGHT) dh = TOP_HEIGHT;
+	if (ox < 0) ox = 0;
+	if (oy < 0) oy = 0;
+	if (ox + dw > TOP_WIDTH) dw = TOP_WIDTH - ox;
+	if (oy + dh > TOP_HEIGHT) dh = TOP_HEIGHT - oy;
+	(void)sw;
+	(void)sh;
+	for (int y0 = 0; y0 < dh; y0 += 16) {
+		int rows = dh - y0;
+		if (rows > 16) rows = 16;
+		for (int r = 0; r < rows; r++) {
+			int srcY = sy ? sy[y0 + r] : y0 + r;
+			const uint16_t* row = src + (size_t)srcY * (size_t)stride;
+			if (!sx) {
+				memcpy(tile[r], row, (size_t)dw * sizeof(uint16_t));
+			} else {
+				for (int x = 0; x < dw; x++) tile[r][x] = row[sx[x]];
+			}
+		}
+		int base = TOP_HEIGHT - 1 - (oy + y0);
+		for (int x = 0; x < dw; x++) {
+			uint16_t* d = s_top + (ox + x) * TOP_HEIGHT + base;
+			int r = 0;
+			for (; r + 3 < rows; r += 4) {
+				d[0] = tile[r][x];
+				d[-1] = tile[r + 1][x];
+				d[-2] = tile[r + 2][x];
+				d[-3] = tile[r + 3][x];
+				d -= 4;
+			}
+			for (; r < rows; r++) *d-- = tile[r][x];
+		}
+	}
 }
 
 void video_present(const uint16_t* pixels, int width, int height, int stride) {
@@ -91,39 +139,19 @@ void video_present(const uint16_t* pixels, int width, int height, int stride) {
 			tabH = dh;
 			tabSrcH = height;
 		}
-		for (int y = 0; y < dh; y++) {
-			const uint16_t* src = pixels + syTab[y] * stride;
-			int dy = oy + y;
-			int base = TOP_HEIGHT - 1 - dy;
-			for (int x = 0; x < dw; x++) {
-				s_top[(ox + x) * TOP_HEIGHT + base] = src[sxTab[x]];
-			}
-		}
+		blit_rect(pixels, width, height, stride, dw, dh, ox, oy, sxTab, syTab);
 	} else {
 		int ox = (TOP_WIDTH - width) / 2;
 		int oy = (TOP_HEIGHT - height) / 2;
-		for (int x = 0; x < width; x++) {
-			const uint16_t* src = pixels + x;
-			uint16_t* dst = s_top + (ox + x) * TOP_HEIGHT + (TOP_HEIGHT - 1 - oy);
-			int y = 0;
-			for (; y + 3 < height; y += 4) {
-				dst[0] = src[0];
-				dst[-1] = src[stride];
-				dst[-2] = src[stride * 2];
-				dst[-3] = src[stride * 3];
-				dst -= 4;
-				src += stride * 4;
-			}
-			for (; y < height; y++) {
-				*dst-- = *src;
-				src += stride;
-			}
-		}
+		blit_rect(pixels, width, height, stride, width, height, ox, oy, NULL, NULL);
 	}
 
 	if (s_fpsT) {
 		char hud[24];
-		snprintf(hud, sizeof(hud), "%d fps  skip %d", s_fps, s_skip < 0 ? 0 : s_skip);
+		if (s_dyn)
+			snprintf(hud, sizeof(hud), "%d fps  dyn", s_fps);
+		else
+			snprintf(hud, sizeof(hud), "%d fps  skip %d", s_fps, s_skip < 0 ? 0 : s_skip);
 		video_overlay_text(8, 4, hud, 0xFFE0);
 	}
 }
@@ -234,9 +262,11 @@ void video_wipe(void) {
 }
 
 void video_flush_nosync(void) {
-	(void)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-	gfxFlushBuffers();
-	gfxSwapBuffers();
+	/* Swap the top screen only. Flushing and flipping the bottom buffer
+	   every emulated frame redrew a stale console page (flicker) and
+	   pushed another 230KB through the cache on an old 3DS. */
+	if (s_top) GSPGPU_FlushDataCache(s_top, TOP_WIDTH * TOP_HEIGHT * sizeof(uint16_t));
+	gfxScreenSwapBuffers(GFX_TOP, false);
 }
 
 void video_emu_frame(void) {

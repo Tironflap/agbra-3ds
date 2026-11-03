@@ -14,3 +14,4 @@ int video_fps(void);
 void video_log(const char* msg);
 void video_wipe(void);
 void video_set_skip(int skip);
+void video_set_dyn(int on);

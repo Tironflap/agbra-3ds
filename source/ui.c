@@ -210,7 +210,7 @@ static void draw_playing(void) {
 	ra_rich_presence(rp, sizeof(rp));
 	if (rp[0]) printf("%s\n", rp);
 	printf("\nL+R+Down  menu\n");
-	if (!g_app.hardcore) printf("X save state  Y load  ZL turbo\n");
+	if (!g_app.hardcore) printf("X save  Y load  ZL or touch turbo\n");
 	else printf("Hardcore: states and turbo locked\n");
 	footer_status();
 }
@@ -220,8 +220,9 @@ void ui_show_playing(void) {
 	s_scanned = false;
 	g_app.browserIndex = 0;
 	draw_playing();
+	/* Top is the game. Swapping it here flashes a stale page. */
 	gfxFlushBuffers();
-	gfxSwapBuffers();
+	gfxScreenSwapBuffers(GFX_BOTTOM, false);
 }
 
 void ui_draw(void) {
@@ -263,6 +264,7 @@ static void handle_menu(u32 down) {
 	if (down & KEY_B) {
 		g_app.paused = false;
 		g_app.screen = APP_PLAYING;
+		ui_show_playing();
 		return;
 	}
 	if (!(down & KEY_A)) return;
@@ -270,6 +272,7 @@ static void handle_menu(u32 down) {
 	case 0:
 		g_app.paused = false;
 		g_app.screen = APP_PLAYING;
+		ui_show_playing();
 		break;
 	case 1:
 		ra_refresh_list();
@@ -280,6 +283,7 @@ static void handle_menu(u32 down) {
 		ra_reset();
 		g_app.paused = false;
 		g_app.screen = APP_PLAYING;
+		ui_show_playing();
 		app_toast("Reset");
 		break;
 	case 3:

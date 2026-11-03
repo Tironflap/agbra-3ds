@@ -3,10 +3,12 @@ AGB-RA is provided for building a Nintendo 3DS homebrew GBA emulator.
 - AGB-RA frontend (source/, include/, Makefile): MIT
 - rcheevos (third_party/rcheevos): MIT, RetroAchievements.org
 - mGBA (fetched by fetch-deps.sh): MPL-2.0, Jeffrey Pfau (endrift)
+- gpSP (third_party/gpsp): GPL-2.0-or-later, Exophase and the libretro gpSP authors
 
 Linking mGBA makes the resulting binary subject to the MPL-2.0 for the
-mGBA portions. Do not include copyrighted Game Boy Advance BIOS or ROMs
-in distributions.
+mGBA portions. Linking gpSP makes the combined binary subject to GPL-2.0
+for the gpSP portions. Do not include copyrighted Game Boy Advance BIOS
+or ROMs in distributions.
 
 MIT License (frontend)
 

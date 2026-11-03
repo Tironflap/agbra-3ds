@@ -5,6 +5,9 @@ build/
 *.cia
 *.map
 *.lst
+*.o
+*.a
+*.d
 third_party/mgba/
 third_party/prefix/
 .DS_Store

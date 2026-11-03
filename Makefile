@@ -21,7 +21,9 @@ DATA		:=	data
 INCLUDES	:=	include \
 			third_party/rcheevos/include \
 			third_party/rcheevos/src \
-			third_party/prefix/include
+			third_party/prefix/include \
+			third_party/gpsp/libretro/libretro-common/include \
+			third_party/gpsp/libretro
 GRAPHICS	:=	gfx
 GFXBUILD	:=	$(BUILD)
 
@@ -39,7 +41,7 @@ endif
 #---------------------------------------------------------------------------------
 ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
-CFLAGS	:=	-g -Wall -O2 -mword-relocations \
+CFLAGS	:=	-g -Wall -O3 -mword-relocations \
 			-ffunction-sections \
 			$(ARCH)
 
@@ -55,7 +57,8 @@ ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) \
 			-Wl,--wrap,read,--wrap,write
 
-LIBS	:= -lmgba -lz -lmbedtls -lmbedx509 -lmbedcrypto -lctru -lm
+LIBS	:= $(TOPDIR)/third_party/gpsp/gpsp_libretro_ctr.a \
+			-lmgba -lz -lmbedtls -lmbedx509 -lmbedcrypto -lctru -lm -lstdc++
 
 #---------------------------------------------------------------------------------
 LIBDIRS	:= $(CTRULIB) $(PORTLIBS) $(MGBA_PREFIX)
@@ -137,8 +140,13 @@ endif
 
 .PHONY: all clean deps
 
-all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
+GPSP_LIB	:=	$(TOPDIR)/third_party/gpsp/gpsp_libretro_ctr.a
+
+all: $(GPSP_LIB) $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+
+$(GPSP_LIB):
+	$(MAKE) -C $(TOPDIR)/third_party/gpsp platform=ctr -j$(shell nproc)
 
 deps:
 	./fetch-deps.sh

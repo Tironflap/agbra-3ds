@@ -2,6 +2,7 @@
 #include "app.h"
 #include "audio.h"
 #include "config.h"
+#include "fastgba.h"
 #include "fs.h"
 #include "video.h"
 
@@ -18,10 +19,6 @@
 #include <strings.h>
 #include <unistd.h>
 
-extern uint32_t* romBuffer;
-extern size_t romBufferSize;
-
-
 static struct mCore* s_core = NULL;
 static mColor* s_pixels = NULL;
 static uint8_t* s_rom = NULL;
@@ -31,12 +28,20 @@ static char s_savePath[512];
 static struct VFile* s_savVf = NULL;
 static bool s_loaded = false;
 static bool s_config = false;
+static int s_fast = 0;
 static int s_vw = GBA_WIDTH;
 static int s_vh = GBA_HEIGHT;
 static int s_stride = GBA_WIDTH;
 
 static int emu_is_gb(void) {
+	if (s_fast) return 0;
 	return s_core && s_core->platform && s_core->platform(s_core) == mPLATFORM_GB;
+}
+
+static int path_is_gba(const char* path) {
+	const char* dot = strrchr(path, '.');
+	if (!dot) return 0;
+	return strcasecmp(dot, ".gba") == 0 || strcasecmp(dot, ".agb") == 0;
 }
 
 static int rom_is_gbc(const char* path) {
@@ -52,7 +57,6 @@ static int rom_is_gbc(const char* path) {
 }
 
 static void free_rom_copy(void) {
-	/* Points at romBuffer, which lives until the process exits. */
 	s_rom = NULL;
 	s_romSize = 0;
 }
@@ -71,14 +75,16 @@ void emu_exit(void) {
 }
 
 bool emu_loaded(void) {
-	return s_loaded && s_core;
+	return s_loaded && (s_core || s_fast);
 }
 
 const uint16_t* emu_pixels(void) {
+	if (s_fast) return fastgba_pixels();
 	return s_pixels;
 }
 
 int emu_stride(void) {
+	if (s_fast) return fastgba_stride();
 	return s_stride;
 }
 
@@ -110,8 +116,13 @@ const char* emu_rom_path(void) {
 }
 
 void emu_unload(void) {
+	if (s_fast || s_core) emu_flush_save();
+	if (s_fast) {
+		fastgba_unload();
+		s_fast = 0;
+		video_set_dyn(0);
+	}
 	if (s_core) {
-		emu_flush_save();
 		/* The core closes the save VFile inside deinit. Closing it again
 		   frees the buffer before the write is safe to trust. */
 		s_savVf = NULL;
@@ -131,20 +142,11 @@ void emu_unload(void) {
 }
 
 static bool cache_rom(const char* path) {
+	/* RetroAchievements hashes the file on the card. Keeping a second
+	   copy of the cart in romBuffer used to alias unmapped memory and
+	   held 16MB for the whole session. */
+	(void)path;
 	free_rom_copy();
-	if (!romBuffer) return false;
-	FILE* f = fopen(path, "rb");
-	if (!f) return false;
-	if (fseek(f, 0, SEEK_END) != 0) {
-		fclose(f);
-		return false;
-	}
-	long sz = ftell(f);
-	fclose(f);
-	if (sz <= 0 || (size_t)sz > romBufferSize) return false;
-	/* Bytes already sit in romBuffer. Hash that, don't read the ROM twice. */
-	s_rom = (uint8_t*)romBuffer;
-	s_romSize = (size_t)sz;
 	return true;
 }
 
@@ -166,6 +168,27 @@ const char* emu_load_phase(void) {
 int emu_load_pump(void) {
 	switch (s_step) {
 	case 1:
+		if (path_is_gba(s_path)) {
+			char stem[256];
+			app_stem(s_path, stem, sizeof(stem));
+			snprintf(s_savePath, sizeof(s_savePath), AGBRA_SAVES_DIR "/%s.sav", stem);
+			/* gpSP recompiles ARM7 to ARM11. The mGBA interpreter is what
+			   holds an old 3DS near 15 fps. If the dynarec cannot map
+			   executable pages, this returns false and mGBA still loads. */
+			if (fastgba_load(s_path, s_savePath)) {
+				s_fast = 1;
+				s_vw = GBA_WIDTH;
+				s_vh = GBA_HEIGHT;
+				s_stride = fastgba_stride();
+				video_set_skip(0);
+				video_set_dyn(1);
+				s_loaded = true;
+				s_step = 0;
+				snprintf(s_phase, sizeof(s_phase), "ready");
+				return 2;
+			}
+			app_set_status("Dynarec unavailable — using the interpreter");
+		}
 		s_core = mCoreFind(s_path);
 		if (!s_core) {
 			snprintf(s_phase, sizeof(s_phase), "fail: not a ROM");
@@ -323,7 +346,6 @@ bool emu_load(const char* path) {
 }
 
 static int s_liveSkip = 0;
-static int s_untilDraw = 0;
 static bool s_old3ds = true;
 static bool s_known3ds = false;
 
@@ -337,8 +359,9 @@ static void emu_check_3ds(void) {
 
 int emu_target_ms(void) {
 	emu_check_3ds();
-	/* 50 Hz on an old 3DS. A New 3DS can hold 60. */
-	return s_old3ds ? 20 : 16;
+	/* 60 Hz fits on a New 3DS. An old 3DS locks to just over 30 when it
+	   cannot finish a frame inside one vblank. */
+	return s_old3ds ? 32 : 16;
 }
 
 static void emu_push_frameskip(int skip) {
@@ -349,7 +372,6 @@ static void emu_push_frameskip(int skip) {
 		return;
 	}
 	s_liveSkip = skip;
-	s_untilDraw = 0;
 	s_core->opts.frameskip = skip;
 	mCoreConfigSetIntValue(&s_core->config, "frameskip", skip);
 	if (s_core->reloadConfigOption) s_core->reloadConfigOption(s_core, "frameskip", &s_core->config);
@@ -360,16 +382,18 @@ void emu_apply_options(void) {
 	if (!s_core || !s_config) return;
 	emu_check_3ds();
 	int skip = g_cfg.frameskip;
-	if (skip < 0) skip = s_old3ds ? 4 : 0;
+	/* Auto starts at 0. Skipping four frames made the picture update at
+	   about 10 Hz while the counter still claimed ~50. */
+	if (skip < 0) skip = 0;
 	if (skip > 9) skip = 9;
 	s_liveSkip = -1;
 	emu_push_frameskip(skip);
 
-	/* Hardware keeps idle loops. Anything else on an old 3DS detects them,
-	   which is what gets Pokemon-class games near full speed. */
+	/* Hardware keeps idle loops. An old 3DS detects them so busy-wait
+	   games (Pokemon and most menus) are not stuck interpreting spin. */
 	const char* idle = "remove";
 	if (g_cfg.accuracy >= 2) idle = "ignore";
-	else if (g_cfg.accuracy <= 0 || (g_cfg.frameskip < 0 && s_old3ds)) idle = "detect";
+	else if (g_cfg.accuracy <= 0 || s_old3ds) idle = "detect";
 	mCoreConfigSetValue(&s_core->config, "idleOptimization", idle);
 	if (emu_is_gb()) mCoreConfigSetIntValue(&s_core->config, "sgb.borders", 0);
 	/* opts is zeroed. loadConfig copies volume straight through, so 0 mutes the GBA. */
@@ -379,16 +403,61 @@ void emu_apply_options(void) {
 }
 
 void emu_note_frame_ms(int ms) {
+	/* The dynarec is paced by vblank. Auto-skip during the first
+	   compiled blocks would stick and leave the picture at 30 Hz. */
+	if (s_fast) return;
 	if (g_cfg.frameskip >= 0) return;
+	if (ms < 1) ms = 1;
+	/* score is the emulated rate this batch would hold if we didn't sleep.
+	   A higher skip only sticks when it actually gets the game faster and
+	   still clears 30 emulated fps. A failed try is pinned so it cannot
+	   oscillate every other frame. */
+	static int pinSkip = -1;
+	static int pinLeft = 0;
+	static int prevSkip = 0;
+	static int prevScore = 0;
+	static int changed = 0;
 	static int cool = 0;
-	int hi = emu_target_ms() + 1;
-	int lo = emu_target_ms() - 4;
-	if (ms > hi && s_liveSkip < 9) {
+	int frames = (s_liveSkip < 0 ? 0 : s_liveSkip) + 1;
+	int score = frames * 1000 / ms;
+	if (pinLeft > 0) pinLeft--;
+
+	if (changed) {
+		changed = 0;
+		int better = score >= prevScore + 4 && score >= 30;
+		if (!better) {
+			pinSkip = s_liveSkip;
+			pinLeft = 90;
+			emu_push_frameskip(prevSkip);
+			return;
+		}
+		prevScore = score;
+		prevSkip = s_liveSkip;
 		cool = 0;
-		emu_push_frameskip(s_liveSkip + 1);
-	} else if (ms < lo && s_liveSkip > 0) {
-		if (++cool >= 20) {
+		return;
+	}
+	prevScore = score;
+	prevSkip = s_liveSkip;
+
+	if (s_liveSkip == 0 && ms > 16 && ms <= 30) {
+		if (!(pinSkip == 1 && pinLeft > 0)) {
+			changed = 1;
+			emu_push_frameskip(1);
+		}
+		return;
+	}
+	if (ms > 32 && s_liveSkip < 3) {
+		int next = s_liveSkip + 1;
+		if (pinSkip == next && pinLeft > 0) return;
+		changed = 1;
+		cool = 0;
+		emu_push_frameskip(next);
+		return;
+	}
+	if (ms < 26 && s_liveSkip > 0) {
+		if (++cool >= 45) {
 			cool = 0;
+			changed = 1;
 			emu_push_frameskip(s_liveSkip - 1);
 		}
 	} else {
@@ -397,30 +466,45 @@ void emu_note_frame_ms(int ms) {
 }
 
 int emu_frameskip(void) {
+	if (s_fast) return 0;
 	return s_liveSkip < 0 ? 0 : s_liveSkip;
 }
 
+int emu_is_fast(void) {
+	return s_fast;
+}
+
 bool emu_run_frame(void) {
+	if (s_fast) {
+		fastgba_run();
+		return true;
+	}
 	if (!s_core) return false;
-	/* Match mGBA: draw, then skip `frameskip` frames. Copying a frame the
-	   renderer never wrote is pure waste on an old 3DS. */
-	bool draw = s_liveSkip <= 0 || s_untilDraw <= 0;
+	/* The core's own frameskip drops scanline draws. The frontend batches
+	   skip+1 calls and presents once, so a second skip counter here only
+	   hid the frame the core had just rendered. */
 	s_core->runFrame(s_core);
-	if (s_liveSkip <= 0) s_untilDraw = 0;
-	else if (draw) s_untilDraw = s_liveSkip;
-	else s_untilDraw--;
-	return draw;
+	return true;
 }
 
 void emu_reset(void) {
+	if (s_fast) {
+		fastgba_reset();
+		return;
+	}
 	if (s_core) s_core->reset(s_core);
 }
 
 void emu_set_keys(uint32_t keys) {
+	if (s_fast) {
+		fastgba_set_keys(keys);
+		return;
+	}
 	if (s_core) s_core->setKeys(s_core, keys);
 }
 
 uint8_t emu_read8(uint32_t address) {
+	if (s_fast) return fastgba_read8(address);
 	if (!s_core) return 0;
 	return (uint8_t)s_core->busRead8(s_core, address);
 }
@@ -438,7 +522,11 @@ void emu_audio_pump(void) {
 	if (n) audio_push(tmp, n);
 }
 
-void emu_flush_save(void) {
+static void flush_save(int sync) {
+	if (s_fast) {
+		fastgba_flush_save(s_savePath, sync);
+		return;
+	}
 	if (!s_savVf || !s_savePath[0]) return;
 	size_t n = (size_t)s_savVf->size(s_savVf);
 	if (!n || n > 128 * 1024) return;
@@ -453,14 +541,31 @@ void emu_flush_save(void) {
 			if (wr <= 0) break;
 			off += (size_t)wr;
 		}
-		fsync(fd);
+		/* fsync on the SD card stalls the emulator for a frame or two.
+		   The periodic write leaves it in the cache. Pause and exit sync. */
+		if (sync) fsync(fd);
 		close(fd);
 	}
 	s_savVf->unmap(s_savVf, p, n);
 }
 
+void emu_flush_save(void) {
+	flush_save(1);
+}
+
+void emu_flush_save_soft(void) {
+	flush_save(0);
+}
+
 bool emu_save_state(int slot) {
-	if (!s_core || g_app.hardcore) return false;
+	if (g_app.hardcore) return false;
+	if (s_fast) {
+		char stem[256], path[512];
+		app_stem(s_path, stem, sizeof(stem));
+		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
+		return fastgba_save_state(path);
+	}
+	if (!s_core) return false;
 	char stem[256], path[512];
 	app_stem(s_path, stem, sizeof(stem));
 	snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
@@ -484,7 +589,14 @@ bool emu_save_state(int slot) {
 }
 
 bool emu_load_state(int slot) {
-	if (!s_core || g_app.hardcore) return false;
+	if (g_app.hardcore) return false;
+	if (s_fast) {
+		char stem[256], path[512];
+		app_stem(s_path, stem, sizeof(stem));
+		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
+		return fastgba_load_state(path);
+	}
+	if (!s_core) return false;
 	char stem[256], path[512];
 	app_stem(s_path, stem, sizeof(stem));
 	snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);

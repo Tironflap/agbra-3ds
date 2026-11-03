@@ -85,7 +85,18 @@ TOOLCHAIN="$MGBA_DIR/src/platform/3ds/CMakeToolchain.txt"
 
 # The stock 3DS rules open the SD archive from userAppInit and mmap files.
 # Both crash the fs module when this core is linked into another homebrew.
-python3 - "$MGBA_DIR/src/platform/3ds/CMakeLists.txt" << 'PY'
+PYTHON=""
+for cand in python3 python "/c/Python313/python.exe" py; do
+	if command -v "$cand" >/dev/null 2>&1 || [ -x "$cand" ]; then
+		PYTHON=$cand
+		break
+	fi
+done
+if [ -z "$PYTHON" ]; then
+	echo "python3 is required to patch mGBA's 3DS port."
+	exit 1
+fi
+"$PYTHON" - "$MGBA_DIR/src/platform/3ds/CMakeLists.txt" << 'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 t = p.read_text()
@@ -140,7 +151,7 @@ set(USE_EDITLINE OFF CACHE BOOL "" FORCE)
 set(USE_FFMPEG OFF CACHE BOOL "" FORCE)
 set(USE_PNG OFF CACHE BOOL "" FORCE)
 set(USE_LIBZIP OFF CACHE BOOL "" FORCE)
-set(USE_MINIZIP OFF CACHE BOOL "" FORCE)
+set(USE_MINIZIP ON CACHE BOOL "" FORCE)
 set(USE_SQLITE3 OFF CACHE BOOL "" FORCE)
 set(USE_ELF OFF CACHE BOOL "" FORCE)
 set(USE_LUA OFF CACHE BOOL "" FORCE)
@@ -191,4 +202,18 @@ fi
 rm -rf "$PREFIX"
 mv "$STAGE" "$PREFIX"
 echo "libmgba ready: $PREFIX/lib/libmgba.a"
+
+# The repo vendors a patched gpSP (JIT map, small cache, MSYS include path).
+# Cloning upstream again drops those patches.
+GPSP_DIR="$ROOT/third_party/gpsp"
+if [ ! -d "$GPSP_DIR/libretro" ]; then
+	echo "==> Cloning gpSP"
+	git clone --depth 1 https://github.com/libretro/gpsp.git "$GPSP_DIR"
+	echo "WARNING: upstream gpSP has no AGB-RA patches. Prefer the vendored tree."
+fi
+if [ ! -f "$GPSP_DIR/gpsp_libretro_ctr.a" ]; then
+	echo "==> Building gpSP (GBA dynarec)"
+	make -C "$GPSP_DIR" platform=ctr -j"$JOBS"
+fi
+
 echo "Now: make -j$JOBS"

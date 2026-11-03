@@ -11,6 +11,15 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
+/* libctru's socket.h has no timeout options. The 3DS soc:u service uses
+   the same codes as the rest of the Nintendo homebrew stacks. */
+#ifndef SO_SNDTIMEO
+#define SO_SNDTIMEO 0x1005
+#endif
+#ifndef SO_RCVTIMEO
+#define SO_RCVTIMEO 0x1006
+#endif
+
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/net_sockets.h>
@@ -305,7 +314,8 @@ bool http_init(void) {
 	}
 	s_net = 1;
 	s_run = 1;
-	s_thread = threadCreate(http_thread, NULL, 96 * 1024, 0x30, -1, false);
+	/* Core 1, so TLS and achievement uploads do not steal the emulator. */
+	s_thread = threadCreate(http_thread, NULL, 96 * 1024, 0x30, 1, false);
 	return true;
 }
 
