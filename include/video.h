@@ -13,5 +13,8 @@ void video_emu_frame(void);
 int video_fps(void);
 void video_log(const char* msg);
 void video_wipe(void);
+/* Point the console at the bottom back buffer, then publish it. */
+void video_console_target(void);
+void video_present_bottom(void);
 void video_set_skip(int skip);
 void video_set_dyn(int on);

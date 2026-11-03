@@ -26,7 +26,7 @@ static void trim(char* s) {
 void config_load(void) {
 	FILE* f = fopen(AGBRA_CFG_PATH, "r");
 	if (!f) return;
-	char line[256];
+	char line[1600];
 	while (fgets(line, sizeof(line), f)) {
 		trim(line);
 		if (line[0] == '#' || line[0] == 0) continue;
@@ -53,6 +53,14 @@ void config_load(void) {
 		} else if (strcmp(key, "accuracy") == 0) {
 			g_cfg.accuracy = atoi(val);
 			if (g_cfg.accuracy < 0 || g_cfg.accuracy > 2) g_cfg.accuracy = 1;
+		} else if (strcmp(key, "romm_url") == 0) {
+			strncpy(g_cfg.romm_url, val, sizeof(g_cfg.romm_url) - 1);
+		} else if (strcmp(key, "romm_user") == 0) {
+			strncpy(g_cfg.romm_user, val, sizeof(g_cfg.romm_user) - 1);
+		} else if (strcmp(key, "romm_token") == 0) {
+			strncpy(g_cfg.romm_token, val, sizeof(g_cfg.romm_token) - 1);
+		} else if (strcmp(key, "romm_refresh") == 0) {
+			strncpy(g_cfg.romm_refresh, val, sizeof(g_cfg.romm_refresh) - 1);
 		}
 	}
 	fclose(f);
@@ -69,5 +77,9 @@ void config_save(void) {
 	fprintf(f, "scale=%d\n", g_cfg.scale);
 	fprintf(f, "frameskip=%d\n", g_cfg.frameskip);
 	fprintf(f, "accuracy=%d\n", g_cfg.accuracy);
+	fprintf(f, "romm_url=%s\n", g_cfg.romm_url);
+	fprintf(f, "romm_user=%s\n", g_cfg.romm_user);
+	fprintf(f, "romm_token=%s\n", g_cfg.romm_token);
+	fprintf(f, "romm_refresh=%s\n", g_cfg.romm_refresh);
 	fclose(f);
 }

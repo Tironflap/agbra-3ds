@@ -25,15 +25,20 @@
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #define HTTP_MAX_JOBS 8
-#define HTTP_BODY_MAX (256 * 1024)
+#define HTTP_BODY_MAX (512 * 1024)
 #define SOC_ALIGN 0x1000
 #define SOC_BUFFERSIZE 0x80000
 
 typedef struct HttpJob {
-	char url[768];
+	char url[1024];
 	char* post;
 	char contentType[96];
+	char auth[1100];
+	char savePath[512];
 	rc_client_server_callback_t callback;
 	void* callback_data;
 	char* body;
@@ -44,6 +49,10 @@ typedef struct HttpJob {
 	volatile int inUse;
 } HttpJob;
 
+static volatile uint32_t s_progGot;
+static volatile uint32_t s_progTotal;
+static volatile int s_progOn;
+
 static HttpJob s_jobs[HTTP_MAX_JOBS];
 static LightLock s_lock;
 static u32* s_soc;
@@ -51,23 +60,29 @@ static int s_net;
 static Thread s_thread;
 static volatile int s_run;
 
-static int parse_url(const char* url, char* host, size_t hostLen, char* path, size_t pathLen, int* https) {
+static int parse_url(const char* url, char* host, size_t hostLen, char* path, size_t pathLen, int* https, int* port) {
 	const char* p = url;
 	*https = 1;
+	*port = 443;
 	if (strncmp(p, "https://", 8) == 0) p += 8;
 	else if (strncmp(p, "http://", 7) == 0) {
 		*https = 0;
+		*port = 80;
 		p += 7;
 	} else {
 		return 0;
 	}
 	const char* slash = strchr(p, '/');
-	size_t hlen = slash ? (size_t)(slash - p) : strlen(p);
-	const char* colon = memchr(p, ':', hlen);
-	if (colon) hlen = (size_t)(colon - p);
+	size_t hostportLen = slash ? (size_t)(slash - p) : strlen(p);
+	const char* colon = memchr(p, ':', hostportLen);
+	size_t hlen = colon ? (size_t)(colon - p) : hostportLen;
 	if (!hlen || hlen >= hostLen) return 0;
 	memcpy(host, p, hlen);
 	host[hlen] = 0;
+	if (colon) {
+		int parsed = atoi(colon + 1);
+		if (parsed > 0 && parsed < 65536) *port = parsed;
+	}
 	if (!slash) {
 		memcpy(path, "/", 2);
 		return 1;
@@ -75,6 +90,18 @@ static int parse_url(const char* url, char* host, size_t hostLen, char* path, si
 	if (strlen(slash) >= pathLen) return 0;
 	memcpy(path, slash, strlen(slash) + 1);
 	return 1;
+}
+
+static int write_all(int fd, const void* buf, size_t len) {
+	const unsigned char* p = buf;
+	size_t off = 0;
+	while (off < len) {
+		ssize_t n = write(fd, p + off, len - off);
+		if (n < 0) return -1;
+		if (n == 0) return -1;
+		off += (size_t)n;
+	}
+	return 0;
 }
 
 static int net_send_all(mbedtls_ssl_context* ssl, const unsigned char* data, size_t len) {
@@ -117,10 +144,16 @@ static int append_bytes(char** buf, size_t* len, size_t* cap, const char* src, s
 	return 0;
 }
 
+static int http_download_hop(HttpJob* job, int hop);
 static int http_download(HttpJob* job) {
-	char host[128], path[640];
+	return http_download_hop(job, 0);
+}
+
+static int http_download_hop(HttpJob* job, int hop) {
+	char host[128], path[1000];
 	int https = 1;
-	if (!s_net || !parse_url(job->url, host, sizeof(host), path, sizeof(path), &https)) return -1;
+	int portNum = 80;
+	if (!s_net || !parse_url(job->url, host, sizeof(host), path, sizeof(path), &https, &portNum)) return -1;
 
 	mbedtls_net_context net;
 	mbedtls_ssl_context ssl;
@@ -129,7 +162,7 @@ static int http_download(HttpJob* job) {
 	mbedtls_ctr_drbg_context drbg;
 	int handshake = 0;
 	char port[8];
-	snprintf(port, sizeof(port), "%d", https ? 443 : 80);
+	snprintf(port, sizeof(port), "%d", portNum);
 
 	mbedtls_net_init(&net);
 	mbedtls_ssl_init(&ssl);
@@ -148,7 +181,7 @@ static int http_download(HttpJob* job) {
 		return -2;
 	}
 	struct timeval tv;
-	tv.tv_sec = 8;
+	tv.tv_sec = job->savePath[0] ? 30 : 8;
 	tv.tv_usec = 0;
 	setsockopt(net.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	setsockopt(net.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -172,18 +205,29 @@ static int http_download(HttpJob* job) {
 
 	const char* ct = job->contentType[0] ? job->contentType : "application/x-www-form-urlencoded";
 	size_t postLen = job->post ? strlen(job->post) : 0;
-	char header[1024];
+	char hostHeader[160];
+	if ((https && portNum == 443) || (!https && portNum == 80))
+		snprintf(hostHeader, sizeof(hostHeader), "%s", host);
+	else
+		snprintf(hostHeader, sizeof(hostHeader), "%s:%d", host, portNum);
+	char header[1800];
 	int hlen = snprintf(header, sizeof(header),
 		"%s %s HTTP/1.0\r\n"
 		"Host: %s\r\n"
 		"User-Agent: AGB-RA/1.0 rcheevos/" RCHEEVOS_VERSION_STRING "\r\n"
 		"Accept: */*\r\n"
 		"Connection: close\r\n",
-		job->post ? "POST" : "GET", path, host);
+		job->post ? "POST" : "GET", path, hostHeader);
 	if (hlen < 0 || (size_t)hlen >= sizeof(header)) goto fail;
 	if (job->post) {
 		int extra = snprintf(header + hlen, sizeof(header) - (size_t)hlen,
 			"Content-Type: %s\r\nContent-Length: %u\r\n", ct, (unsigned)postLen);
+		if (extra < 0 || (size_t)hlen + (size_t)extra >= sizeof(header)) goto fail;
+		hlen += extra;
+	}
+	if (job->auth[0]) {
+		int extra = snprintf(header + hlen, sizeof(header) - (size_t)hlen,
+			"Authorization: %s\r\n", job->auth);
 		if (extra < 0 || (size_t)hlen + (size_t)extra >= sizeof(header)) goto fail;
 		hlen += extra;
 	}
@@ -204,9 +248,16 @@ static int http_download(HttpJob* job) {
 	unsigned char tmp[1024];
 	int contentLength = -1;
 	size_t headerEnd = 0;
+	int streaming = job->savePath[0] != 0;
+	char location[768];
+	location[0] = 0;
 	u64 started = osGetTime();
+	u64 lastData = started;
 	for (;;) {
-		if (osGetTime() - started > 12000) break;
+		u64 now = osGetTime();
+		if (streaming) {
+			if (now - lastData > 30000) break;
+		} else if (now - started > 12000) break;
 		int n;
 		if (https) {
 			n = mbedtls_ssl_read(&ssl, tmp, sizeof(tmp));
@@ -218,6 +269,7 @@ static int http_download(HttpJob* job) {
 			if (n == MBEDTLS_ERR_SSL_WANT_READ) continue;
 			if (n <= 0) break;
 		}
+		lastData = osGetTime();
 		if (append_bytes(&raw, &rawLen, &rawCap, (char*)tmp, (size_t)n) != 0) break;
 		if (!headerEnd) {
 			char* split = strstr(raw, "\r\n\r\n");
@@ -229,23 +281,135 @@ static int http_download(HttpJob* job) {
 					if (!eol || eol >= raw + headerEnd) break;
 					if (strncasecmp(line, "Content-Length:", 15) == 0) {
 						contentLength = atoi(line + 15);
+					} else if (strncasecmp(line, "Location:", 9) == 0) {
+						const char* v = line + 9;
+						while (*v == ' ') v++;
+						size_t ln = (size_t)(eol - v);
+						if (ln >= sizeof(location)) ln = sizeof(location) - 1;
+						memcpy(location, v, ln);
+						location[ln] = 0;
 					}
 					line = eol + 2;
 				}
 			}
 		}
-		if (headerEnd && contentLength >= 0 && rawLen >= headerEnd + (size_t)contentLength) break;
-		if (rawLen >= HTTP_BODY_MAX) break;
+		if (streaming && headerEnd) break;
+		if (!streaming && headerEnd && contentLength >= 0 && rawLen >= headerEnd + (size_t)contentLength) break;
+		if (!streaming && rawLen >= HTTP_BODY_MAX) break;
+		if (streaming && !headerEnd && rawLen > 16384) break;
 	}
 
 	job->status = 0;
 	job->body = NULL;
 	job->bodyLen = 0;
-	if (raw) {
-		if (strncmp(raw, "HTTP/", 5) == 0) {
-			char* sp = strchr(raw, ' ');
-			if (sp) job->status = atoi(sp + 1);
+	if (raw && strncmp(raw, "HTTP/", 5) == 0) {
+		char* sp = strchr(raw, ' ');
+		if (sp) job->status = atoi(sp + 1);
+	}
+
+	if (location[0] && job->status >= 300 && job->status < 400 && hop < 2) {
+		char next[1024];
+		next[0] = 0;
+		if (strncmp(location, "http://", 7) == 0 || strncmp(location, "https://", 8) == 0)
+			strncpy(next, location, sizeof(next) - 1);
+		else if (location[0] == '/')
+			snprintf(next, sizeof(next), "%s://%s:%d%s", https ? "https" : "http", host, portNum, location);
+		free(raw);
+		if (https && handshake) mbedtls_ssl_close_notify(&ssl);
+		mbedtls_ssl_free(&ssl);
+		mbedtls_ssl_config_free(&conf);
+		mbedtls_ctr_drbg_free(&drbg);
+		mbedtls_entropy_free(&entropy);
+		mbedtls_net_free(&net);
+		if (!next[0]) return -2;
+		strncpy(job->url, next, sizeof(job->url) - 1);
+		job->url[sizeof(job->url) - 1] = 0;
+		if (job->post) {
+			free(job->post);
+			job->post = NULL;
 		}
+		return http_download_hop(job, hop + 1);
+	}
+
+	if (streaming) {
+		int httpOk = job->status >= 200 && job->status < 300;
+		const char* bodyStart = (raw && headerEnd && rawLen >= headerEnd) ? raw + headerEnd : NULL;
+		size_t bodyHave = bodyStart ? rawLen - headerEnd : 0;
+		if (contentLength >= 0 && bodyHave > (size_t)contentLength) bodyHave = (size_t)contentLength;
+		if (!httpOk) {
+			size_t n = bodyHave > 180 ? 180 : bodyHave;
+			if (n && bodyStart) {
+				job->body = malloc(n + 1);
+				if (job->body) {
+					memcpy(job->body, bodyStart, n);
+					job->body[n] = 0;
+					job->bodyLen = n;
+				}
+			}
+		} else {
+			char part[540];
+			int pl = snprintf(part, sizeof(part), "%s.part", job->savePath);
+			int fd = (pl > 0 && (size_t)pl < sizeof(part)) ? open(part, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
+			size_t got = 0;
+			int failed = fd < 0;
+			if (!failed) {
+				s_progOn = 1;
+				s_progTotal = contentLength > 0 ? (uint32_t)contentLength : 0;
+				s_progGot = 0;
+				if (bodyHave && write_all(fd, bodyStart, bodyHave) != 0) failed = 1;
+				got = failed ? 0 : bodyHave;
+				s_progGot = (uint32_t)got;
+			}
+			unsigned char chunk[4096];
+			u64 last = osGetTime();
+			while (!failed && (contentLength < 0 || got < (size_t)contentLength)) {
+				if (got >= 64u * 1024u * 1024u) break;
+				if (osGetTime() - last > 30000) { failed = 1; break; }
+				int n;
+				if (https) {
+					n = mbedtls_ssl_read(&ssl, chunk, sizeof(chunk));
+					if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+					if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || n == 0) break;
+					if (n < 0) { failed = 1; break; }
+				} else {
+					n = mbedtls_net_recv(&net, chunk, sizeof(chunk));
+					if (n == MBEDTLS_ERR_SSL_WANT_READ) continue;
+					if (n <= 0) break;
+				}
+				last = osGetTime();
+				size_t take = (size_t)n;
+				if (contentLength >= 0 && got + take > (size_t)contentLength)
+					take = (size_t)contentLength - got;
+				if (take && write_all(fd, chunk, take) != 0) { failed = 1; break; }
+				got += take;
+				s_progGot = (uint32_t)got;
+			}
+			if (fd >= 0) {
+				fsync(fd);
+				close(fd);
+			}
+			s_progOn = 0;
+			if (!failed && contentLength > 0 && got < (size_t)contentLength) failed = 1;
+			if (!failed && got == 0) failed = 1;
+			if (failed) {
+				if (pl > 0) unlink(part);
+				job->status = 0;
+				job->body = strdup("Save failed");
+				job->bodyLen = job->body ? strlen(job->body) : 0;
+			} else {
+				unlink(job->savePath);
+				if (rename(part, job->savePath) != 0) {
+					unlink(part);
+					job->status = 0;
+					job->body = strdup("Save failed");
+					job->bodyLen = job->body ? strlen(job->body) : 0;
+				} else {
+					job->bodyLen = got;
+				}
+			}
+		}
+		free(raw);
+	} else if (raw) {
 		char* body = strstr(raw, "\r\n\r\n");
 		if (body) {
 			body += 4;
@@ -315,7 +479,7 @@ bool http_init(void) {
 	s_net = 1;
 	s_run = 1;
 	/* Core 1, so TLS and achievement uploads do not steal the emulator. */
-	s_thread = threadCreate(http_thread, NULL, 96 * 1024, 0x30, 1, false);
+	s_thread = threadCreate(http_thread, NULL, 128 * 1024, 0x30, 1, false);
 	return true;
 }
 
@@ -363,6 +527,44 @@ void http_server_call(const rc_api_request_t* request,
 	job->callback = callback;
 	job->callback_data = callback_data;
 	LightLock_Unlock(&s_lock);
+}
+
+void http_request(const char* url, const char* post, const char* contentType,
+	const char* authorization, const char* savePath,
+	rc_client_server_callback_t callback, void* callback_data) {
+	LightLock_Lock(&s_lock);
+	HttpJob* job = NULL;
+	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
+		if (!s_jobs[i].inUse) {
+			job = &s_jobs[i];
+			break;
+		}
+	}
+	if (!job) {
+		LightLock_Unlock(&s_lock);
+		if (callback) {
+			rc_api_server_response_t resp;
+			memset(&resp, 0, sizeof(resp));
+			callback(&resp, callback_data);
+		}
+		return;
+	}
+	memset(job, 0, sizeof(*job));
+	job->inUse = 1;
+	if (url) strncpy(job->url, url, sizeof(job->url) - 1);
+	if (post) job->post = strdup(post);
+	if (contentType) strncpy(job->contentType, contentType, sizeof(job->contentType) - 1);
+	if (authorization) strncpy(job->auth, authorization, sizeof(job->auth) - 1);
+	if (savePath) strncpy(job->savePath, savePath, sizeof(job->savePath) - 1);
+	job->callback = callback;
+	job->callback_data = callback_data;
+	LightLock_Unlock(&s_lock);
+}
+
+void http_stream_progress(uint32_t* got, uint32_t* total, int* active) {
+	if (got) *got = s_progGot;
+	if (total) *total = s_progTotal;
+	if (active) *active = s_progOn;
 }
 
 void http_poll(void) {

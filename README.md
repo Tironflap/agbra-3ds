@@ -1,8 +1,8 @@
 # AGB-RA
 
-Native **Nintendo 3DS** homebrew: **mGBA** Game Boy Advance emulator with
-**RetroAchievements** (`rcheevos`). Dual-screen — game on top, RA + menus on
-the touch screen.
+Native **Nintendo 3DS** homebrew: Game Boy, Game Boy Color, and Game Boy
+Advance with **RetroAchievements** (`rcheevos`). GBA uses the gpSP dynarec.
+Dual-screen — game on top, RA + menus on the touch screen.
 
 This is a **devkitPro** project. Build it on your machine, copy `AGBRA.3dsx`
 to the SD card, run it from Homebrew Launcher / FBI.
@@ -86,8 +86,26 @@ Config (RA token, hardcore, scale) in `sdmc:/3ds/agbra/config.ini`.
 | ZL | fast-forward (softcore, New 3DS) |
 | X on ROM list | RetroAchievements login (software keyboard) |
 | Y on ROM list | rescan SD |
+| L on ROM list | download from a RomM server onto the SD card |
+| Up / Down on an achievement | description, and the percent of players who earned it |
 
 Hardcore mode disables save states and turbo, matching RetroAchievements rules.
+
+On the achievement list, the highlighted row shows its description and how
+many players have earned it (the RetroAchievements rarity percent).
+
+## RomM
+
+L on the ROM list downloads Game Boy, Game Boy Color, and Game Boy Advance
+games from your own [RomM](https://github.com/rommapp/romm) server onto the
+SD card (`sdmc:/roms/gb`, `sdmc:/roms/gbc`, `sdmc:/roms/gba`).
+
+The sign-in asks for the server URL (`http://192.168.1.10:8080`), your
+username, and either the password or a client API token that starts with
+`rmm_`. The password is not stored. The token is saved in `config.ini`,
+same as the RetroAchievements token. Create a long-lived token in RomM
+with access to read platforms and ROMs. Y on a game replaces a file that
+is already on the card.
 
 ## Architecture
 
@@ -98,7 +116,7 @@ third_party/mgba/       cloned by fetch-deps.sh (MPL-2.0)
 third_party/prefix/     libmgba.a + headers after fetch-deps
 ```
 
-- **Core:** mGBA (`libmgba`) — accurate GBA CPU/PPU/APU
+- **Core:** gpSP dynarec for GBA, mGBA for Game Boy and Game Boy Color. GBA falls back to mGBA if the dynarec cannot map executable pages.
 - **Achievements:** rcheevos `rc_client` over 3DS `httpc` (HTTPS, worker thread)
 - **Video:** RGB565 blit to the top screen (1x / 360×240 / 400×240)
 - **Audio:** NDSP stereo PCM16
@@ -106,6 +124,6 @@ third_party/prefix/     libmgba.a + headers after fetch-deps
 
 ## Notes
 
-- New 3DS clock boost (`osSetSpeedupEnable`) is on. Old 3DS may drop frames on heavy games; mGBA is still the right core.
+- New 3DS clock boost (`osSetSpeedupEnable`) is on. GBA on an old 3DS uses the dynarec; the first seconds compile blocks and run slower. The HUD shows `dyn` while that core is active.
 - RetroAchievements needs Wi-Fi. The 3DS TLS store is old, so certificate verify is disabled for `retroachievements.org` only in the http helper.
 - Do not distribute BIOS or ROMs with this source.

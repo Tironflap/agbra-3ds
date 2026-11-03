@@ -287,7 +287,22 @@ int ra_list_count(void) {
 
 const char* ra_list_title(int index) {
 	if (index < 0 || index >= s_flatCount || !s_flat[index]) return "";
-	return s_flat[index]->title;
+	return s_flat[index]->title ? s_flat[index]->title : "";
+}
+
+const char* ra_list_description(int index) {
+	if (index < 0 || index >= s_flatCount || !s_flat[index]) return "";
+	return s_flat[index]->description ? s_flat[index]->description : "";
+}
+
+float ra_list_rarity(int index) {
+	if (index < 0 || index >= s_flatCount || !s_flat[index]) return -1.f;
+	return g_app.hardcore ? s_flat[index]->rarity_hardcore : s_flat[index]->rarity;
+}
+
+const char* ra_list_progress(int index) {
+	if (index < 0 || index >= s_flatCount || !s_flat[index]) return "";
+	return s_flat[index]->measured_progress;
 }
 
 bool ra_list_unlocked(int index) {

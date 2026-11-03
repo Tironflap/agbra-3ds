@@ -25,6 +25,10 @@ void ra_rich_presence(char* buf, size_t bufLen);
 int ra_summary(uint32_t* unlocked, uint32_t* total, uint32_t* points);
 int ra_list_count(void);
 const char* ra_list_title(int index);
+const char* ra_list_description(int index);
+/* Percent of players who earned it. Negative if the row does not exist. */
+float ra_list_rarity(int index);
+const char* ra_list_progress(int index);
 bool ra_list_unlocked(int index);
 int ra_list_points(int index);
 void ra_refresh_list(void);

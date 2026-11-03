@@ -5,6 +5,7 @@
 #include "emu.h"
 #include "fs.h"
 #include "ra.h"
+#include "romm.h"
 #include "video.h"
 
 #include <inttypes.h>
@@ -14,6 +15,8 @@
 static RomEntry s_roms[FS_MAX_ROMS];
 static int s_romCount = 0;
 static bool s_scanned = false;
+static int s_pick = 0;
+static int s_pickTop = 0;
 
 static const char* MENU_ITEMS[] = {
 	"Resume",
@@ -69,7 +72,44 @@ static void scan_if_needed(void) {
 
 static void cls(void) {
 	consoleClear();
-	printf("\x1b[0;0H");
+	printf("\x1b[0m");
+}
+
+static void clip_line(const char* s, int max) {
+	char buf[48];
+	int n = 0;
+	if (!s) s = "";
+	if (max > (int)sizeof(buf) - 1) max = (int)sizeof(buf) - 1;
+	while (s[n] && n < max) {
+		buf[n] = (s[n] == '\n' || s[n] == '\r') ? ' ' : s[n];
+		n++;
+	}
+	buf[n] = 0;
+	printf("%s\n", buf);
+}
+
+static void wrap_text(const char* text, int width, int maxLines) {
+	if (!text || !text[0]) {
+		printf("(no description)\n");
+		return;
+	}
+	const char* p = text;
+	int lines = 0;
+	while (*p && lines < maxLines) {
+		while (*p == ' ' || *p == '\n' || *p == '\r') p++;
+		if (!*p) break;
+		int n = 0;
+		int lastSpace = -1;
+		while (p[n] && p[n] != '\n' && p[n] != '\r' && n < width) {
+			if (p[n] == ' ') lastSpace = n;
+			n++;
+		}
+		int take = n;
+		if (p[n] && p[n] != '\n' && p[n] != '\r' && lastSpace > 8) take = lastSpace;
+		printf("%.*s\n", take, p);
+		p += take;
+		lines++;
+	}
 }
 
 static void header(void) {
@@ -116,7 +156,7 @@ static void draw_browser(void) {
 	cls();
 	header();
 	if (s_romCount == 0) {
-		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba\n  sdmc:/roms/gb\n\nBIOS (optional):\n  sdmc:/3ds/agbra/gba_bios.bin\n  sdmc:/3ds/agbra/gb_bios.bin\n  sdmc:/3ds/agbra/gbc_bios.bin\n");
+		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba\n  sdmc:/roms/gb\n  sdmc:/roms/gbc\n\nL downloads from a RomM server.\n");
 	} else {
 		const int rows = 18;
 		if (g_app.browserIndex < g_app.browserTop) g_app.browserTop = g_app.browserIndex;
@@ -127,7 +167,7 @@ static void draw_browser(void) {
 		}
 	}
 	footer_status();
-	printf("\nA load  X login  Y refresh  START quit");
+	printf("\nA load  X RA  Y scan  L RomM");
 }
 
 static void draw_menu(void) {
@@ -161,7 +201,7 @@ static void draw_cheevos(void) {
 	if (n == 0) {
 		printf("No achievements loaded.\nSign in and load a supported game.\n");
 	} else {
-		const int rows = 14;
+		const int rows = 8;
 		if (g_app.cheevoIndex < 0) g_app.cheevoIndex = 0;
 		if (g_app.cheevoIndex >= n) g_app.cheevoIndex = n - 1;
 		int top = g_app.cheevoIndex - rows / 2;
@@ -170,11 +210,28 @@ static void draw_cheevos(void) {
 		for (int i = 0; i < rows && top + i < n; i++) {
 			int idx = top + i;
 			const char* mark = ra_list_unlocked(idx) ? "\x1b[32m*" : "\x1b[31m.";
-			printf("%s%s\x1b[0m %s%2d  %s\x1b[0m\n",
-				idx == g_app.cheevoIndex ? "\x1b[47;30m" : "",
-				mark, idx == g_app.cheevoIndex ? "\x1b[47;30m" : "",
-				ra_list_points(idx), ra_list_title(idx));
+			int sel = idx == g_app.cheevoIndex;
+			printf("%s%s\x1b[0m %s%2d  ", sel ? "\x1b[47;30m" : "", mark, sel ? "\x1b[47;30m" : "",
+				ra_list_points(idx));
+			char title[32];
+			const char* src = ra_list_title(idx);
+			int k = 0;
+			while (src[k] && k < 28) {
+				title[k] = (src[k] == '\n') ? ' ' : src[k];
+				k++;
+			}
+			title[k] = 0;
+			printf("%s\x1b[0m\n", title);
 		}
+		printf("--------------------------------\n");
+		clip_line(ra_list_title(g_app.cheevoIndex), 38);
+		wrap_text(ra_list_description(g_app.cheevoIndex), 38, 3);
+		float rarity = ra_list_rarity(g_app.cheevoIndex);
+		if (rarity >= 0.f)
+			printf("Earned by %.1f%% of players\n", rarity);
+		const char* prog = ra_list_progress(g_app.cheevoIndex);
+		if (prog && prog[0] && !ra_list_unlocked(g_app.cheevoIndex))
+			printf("Progress %s\n", prog);
 	}
 	footer_status();
 	printf("\nB back");
@@ -191,6 +248,7 @@ static void draw_settings(void) {
 	printf("GBA BIOS    %s\n", fs_exists(AGBRA_BIOS_PATH) ? "found" : "missing (HLE)");
 	printf("GB BIOS     %s\n", fs_exists(AGBRA_GB_BIOS_PATH) ? "found" : "missing (HLE)");
 	printf("GBC BIOS    %s\n", fs_exists(AGBRA_GBC_BIOS_PATH) ? "found" : "missing (HLE)");
+	printf("RomM        %.22s\n", romm_ready() ? g_cfg.romm_url : "not set");
 	footer_status();
 	printf("\nA hardcore  X unofficial  Y scale\nL frameskip  R accuracy  B back");
 }
@@ -219,13 +277,85 @@ void ui_show_playing(void) {
 	s_romCount = 0;
 	s_scanned = false;
 	g_app.browserIndex = 0;
+	video_console_target();
 	draw_playing();
 	/* Top is the game. Swapping it here flashes a stale page. */
-	gfxFlushBuffers();
-	gfxScreenSwapBuffers(GFX_BOTTOM, false);
+	video_present_bottom();
+}
+
+static void clamp_pick(int n) {
+	if (n < 1) {
+		s_pick = 0;
+		s_pickTop = 0;
+		return;
+	}
+	if (s_pick < 0) s_pick = 0;
+	if (s_pick >= n) s_pick = n - 1;
+	const int rows = 14;
+	if (s_pick < s_pickTop) s_pickTop = s_pick;
+	if (s_pick >= s_pickTop + rows) s_pickTop = s_pick - rows + 1;
+}
+
+static void draw_romm_list(int games) {
+	cls();
+	header();
+	int n = romm_count();
+	clamp_pick(n);
+	if (games) {
+		printf("%.38s\n", romm_platform_name()[0] ? romm_platform_name() : "RomM");
+		if (romm_total() > 0)
+			printf("%d-%d of %d\n", romm_offset() + (n ? 1 : 0), romm_offset() + n, romm_total());
+	} else {
+		printf("RomM library\n");
+	}
+	if (romm_phase() == ROMM_BUSY || romm_busy()) {
+		char prog[120];
+		if (romm_progress(prog, sizeof(prog))) printf("%s\n", prog);
+		else printf("Contacting RomM...\n");
+	} else if (romm_phase() == ROMM_NEED_LOGIN) {
+		printf("Sign in with X.\nUse a password or an rmm_ token.\n");
+	} else if (n == 0) {
+		printf("%.38s\n", romm_message()[0] ? romm_message() : "Nothing to show.");
+	} else {
+		const int rows = 14;
+		for (int i = 0; i < rows && s_pickTop + i < n; i++) {
+			int idx = s_pickTop + i;
+			const RommRow* row = romm_at(idx);
+			if (!row) break;
+			if (games)
+				printf("%s%.36s\x1b[0m\n", idx == s_pick ? "\x1b[47;30m> " : "  ", row->name);
+			else
+				printf("%s%.26s  (%d)\x1b[0m\n", idx == s_pick ? "\x1b[47;30m> " : "  ", row->name, row->romCount);
+		}
+	}
+	if (romm_message()[0] && n > 0) printf("%.38s\n", romm_message());
+	footer_status();
+	if (games) printf("\nA save  Y replace  L/R page  B back");
+	else printf("\nA open  X sign in  B back");
+}
+
+static int prompt_romm_login(void) {
+	char* url = app_swkbd("RomM URL, for example http://192.168.1.10:8080",
+		g_cfg.romm_url[0] ? g_cfg.romm_url : NULL, false, 180);
+	if (!url) return 0;
+	char urlCopy[192];
+	strncpy(urlCopy, url, sizeof(urlCopy) - 1);
+	urlCopy[sizeof(urlCopy) - 1] = 0;
+	char* user = app_swkbd("RomM username", g_cfg.romm_user[0] ? g_cfg.romm_user : NULL, false, 60);
+	if (!user) return 0;
+	char userCopy[64];
+	strncpy(userCopy, user, sizeof(userCopy) - 1);
+	userCopy[sizeof(userCopy) - 1] = 0;
+	char* secret = app_swkbd("Password, or a token starting with rmm_", NULL, false, 250);
+	if (!secret) return 0;
+	romm_login(urlCopy, userCopy, secret);
+	return 1;
 }
 
 void ui_draw(void) {
+	/* Draw into the bottom back buffer. Clearing the visible page
+	   made the lower half of the touch screen blink. */
+	video_console_target();
 	switch (g_app.screen) {
 	case APP_BROWSER: draw_browser(); break;
 	case APP_LOGIN: draw_browser(); break;
@@ -233,9 +363,10 @@ void ui_draw(void) {
 	case APP_CHEEVOS: draw_cheevos(); break;
 	case APP_SETTINGS: draw_settings(); break;
 	case APP_PLAYING: draw_playing(); break;
+	case APP_ROMM: draw_romm_list(0); break;
+	case APP_ROMM_GAMES: draw_romm_list(1); break;
 	}
-	gfxFlushBuffers();
-	gfxSwapBuffers();
+	video_present_bottom();
 	gspWaitForVBlank();
 }
 
@@ -255,7 +386,61 @@ static void handle_browser(u32 down) {
 		scan_if_needed();
 		app_set_status("Scanned %d ROM(s)", s_romCount);
 	}
+	if (down & KEY_L) {
+		s_pick = 0;
+		s_pickTop = 0;
+		if (!romm_ready()) {
+			if (!prompt_romm_login()) return;
+		} else {
+			romm_load_platforms();
+		}
+		g_app.screen = APP_ROMM;
+	}
 	if (down & KEY_SELECT) g_app.screen = APP_SETTINGS;
+}
+
+static void handle_romm(u32 down, int games) {
+	int n = romm_count();
+	if (!romm_busy()) {
+		if (down & KEY_UP && s_pick > 0) s_pick--;
+		if (down & KEY_DOWN && s_pick + 1 < n) s_pick++;
+	}
+	if (!games && (down & KEY_X)) {
+		if (!prompt_romm_login()) return;
+		g_app.screen = APP_ROMM;
+		return;
+	}
+	if (games && (down & KEY_L)) {
+		s_pick = 0;
+		s_pickTop = 0;
+		romm_page(-1);
+	}
+	if (games && (down & KEY_R)) {
+		s_pick = 0;
+		s_pickTop = 0;
+		romm_page(1);
+	}
+	if (!romm_busy() && (down & KEY_A) && n > 0) {
+		if (games) romm_download(s_pick, 0);
+		else {
+			romm_open(s_pick);
+			s_pick = 0;
+			s_pickTop = 0;
+			g_app.screen = APP_ROMM_GAMES;
+		}
+	}
+	if (!romm_busy() && games && (down & KEY_Y) && n > 0) romm_download(s_pick, 1);
+	if (down & KEY_B && !romm_busy()) {
+		if (games) {
+			s_pick = 0;
+			s_pickTop = 0;
+			romm_load_platforms();
+			g_app.screen = APP_ROMM;
+		} else {
+			s_scanned = false;
+			g_app.screen = APP_BROWSER;
+		}
+	}
 }
 
 static void handle_menu(u32 down) {
@@ -357,6 +542,12 @@ void ui_handle(u32 down, u32 held) {
 		break;
 	case APP_SETTINGS:
 		handle_settings(down);
+		break;
+	case APP_ROMM:
+		handle_romm(down, 0);
+		break;
+	case APP_ROMM_GAMES:
+		handle_romm(down, 1);
 		break;
 	case APP_PLAYING:
 		if (down & KEY_SELECT) {

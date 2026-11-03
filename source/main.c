@@ -75,6 +75,8 @@ void app_ensure_dirs(void) {
 	fs_mkdir_p(AGBRA_SAVES_DIR);
 	fs_mkdir_p(AGBRA_STATES_DIR);
 	fs_mkdir_p(AGBRA_ROMS_DIR);
+	fs_mkdir_p(AGBRA_GB_ROMS_DIR);
+	fs_mkdir_p(AGBRA_GBC_ROMS_DIR);
 }
 
 void app_basename(const char* path, char* out, size_t outLen) {
@@ -204,6 +206,7 @@ int main(int argc, char** argv) {
 
 	mLogSetDefaultLogger(&s_quiet);
 
+	fs_bounce_init();
 	video_init();
 	/* gfxInit brings apt up. The 804 MHz request is ignored before that,
 	   which leaves a New 3DS at old-3DS speed and the game in slow motion. */

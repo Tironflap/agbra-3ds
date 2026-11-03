@@ -13,3 +13,5 @@ typedef struct {
 int fs_scan_roms(RomEntry* list, int max);
 bool fs_exists(const char* path);
 void fs_mkdir_p(const char* path);
+/* The SD bounce buffer is shared. Call this before any other thread starts. */
+void fs_bounce_init(void);

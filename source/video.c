@@ -6,6 +6,7 @@
 #include <string.h>
 
 static uint16_t* s_top = NULL;
+static PrintConsole* s_console = NULL;
 static int s_fps = 0;
 static int s_fpsFrames = 0;
 static int s_skip = 0;
@@ -25,10 +26,33 @@ void video_set_dyn(int on) {
 #define RGB(r, g, b) ((uint16_t)(((r) >> 3) << 11 | ((g) >> 2) << 5 | ((b) >> 3)))
 
 void video_init(void) {
-	gfxInit(GSP_RGB565_OES, GSP_BGR8_OES, false);
+	gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
 	gfxSetDoubleBuffering(GFX_TOP, true);
 	gfxSetDoubleBuffering(GFX_BOTTOM, true);
-	consoleInit(GFX_BOTTOM, NULL);
+	/* consoleInit turns bottom double buffering off and remembers the
+	   visible page. Drawing the menu there made the lower half blink. */
+	s_console = consoleInit(GFX_BOTTOM, NULL);
+	gfxSetDoubleBuffering(GFX_BOTTOM, true);
+	for (int i = 0; i < 2; i++) {
+		uint16_t* fb = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+		if (fb) {
+			memset(fb, 0, TOP_WIDTH * TOP_HEIGHT * sizeof(uint16_t));
+			GSPGPU_FlushDataCache(fb, TOP_WIDTH * TOP_HEIGHT * sizeof(uint16_t));
+		}
+		gfxScreenSwapBuffers(GFX_TOP, false);
+	}
+}
+
+void video_console_target(void) {
+	if (!s_console) return;
+	s_console->frameBuffer = (u16*)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+}
+
+void video_present_bottom(void) {
+	u16* fb = (u16*)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+	/* 240x320 in memory, RGB565. Both screens use the same pixel size. */
+	if (fb) GSPGPU_FlushDataCache(fb, 240 * 320 * sizeof(u16));
+	gfxScreenSwapBuffers(GFX_BOTTOM, false);
 }
 
 void video_exit(void) {
@@ -246,6 +270,8 @@ void video_log(const char* msg) {
 	for (int i = 0; i < s_logCount; i++) {
 		video_overlay_text(6, 18 + i * 10, s_log[i], 0xFFFF);
 	}
+	if (s_top) GSPGPU_FlushDataCache(s_top, TOP_WIDTH * TOP_HEIGHT * sizeof(uint16_t));
+	gfxScreenSwapBuffers(GFX_TOP, false);
 }
 
 void video_wipe(void) {
@@ -253,9 +279,12 @@ void video_wipe(void) {
 	s_logCount = 0;
 	for (int i = 0; i < 2; i++) {
 		s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
-		if (s_top) memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
-		gfxFlushBuffers();
-		gfxSwapBuffers();
+		if (s_top) {
+			memset(s_top, 0, TOP_WIDTH * TOP_HEIGHT * 2);
+			GSPGPU_FlushDataCache(s_top, TOP_WIDTH * TOP_HEIGHT * 2);
+		}
+		/* Top only. Swapping the bottom here flashes a stale console page. */
+		gfxScreenSwapBuffers(GFX_TOP, false);
 		gspWaitForVBlank();
 	}
 	s_top = NULL;

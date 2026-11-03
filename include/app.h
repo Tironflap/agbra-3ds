@@ -10,6 +10,7 @@
 #define AGBRA_DIR "sdmc:/3ds/agbra"
 #define AGBRA_ROMS_DIR "sdmc:/roms/gba"
 #define AGBRA_GB_ROMS_DIR "sdmc:/roms/gb"
+#define AGBRA_GBC_ROMS_DIR "sdmc:/roms/gbc"
 #define AGBRA_BIOS_PATH "sdmc:/3ds/agbra/gba_bios.bin"
 #define AGBRA_GB_BIOS_PATH "sdmc:/3ds/agbra/gb_bios.bin"
 #define AGBRA_GBC_BIOS_PATH "sdmc:/3ds/agbra/gbc_bios.bin"
@@ -31,7 +32,9 @@ typedef enum {
 	APP_PLAYING,
 	APP_MENU,
 	APP_CHEEVOS,
-	APP_SETTINGS
+	APP_SETTINGS,
+	APP_ROMM,
+	APP_ROMM_GAMES
 } AppScreen;
 
 typedef enum {
