@@ -216,4 +216,11 @@ if [ ! -f "$GPSP_DIR/gpsp_libretro_ctr.a" ]; then
 	make -C "$GPSP_DIR" platform=ctr -j"$JOBS"
 fi
 
+# NES (FCEUmm) and Pokemon Mini are vendored. A fresh clone has no 3DS include path.
+for core in fceumm PokeMini; do
+	if [ ! -d "$ROOT/third_party/$core" ]; then
+		echo "==> $core is missing. Restore it from the repository."
+	fi
+done
+
 echo "Now: make -j$JOBS"

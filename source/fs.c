@@ -42,7 +42,10 @@ static int is_rom(const char* name) {
 	return ends_with_ci(name, ".gba") || ends_with_ci(name, ".agb") ||
 		ends_with_ci(name, ".gb") || ends_with_ci(name, ".gbc") ||
 		ends_with_ci(name, ".mb") || ends_with_ci(name, ".bin") ||
-		ends_with_ci(name, ".zip");
+		ends_with_ci(name, ".zip") ||
+		ends_with_ci(name, ".nes") || ends_with_ci(name, ".fds") ||
+		ends_with_ci(name, ".unf") || ends_with_ci(name, ".unif") ||
+		ends_with_ci(name, ".min");
 }
 
 static int cmp_rom(const void* a, const void* b) {
@@ -72,6 +75,9 @@ int fs_scan_roms(RomEntry* list, int max) {
 	count = scan_dir(AGBRA_ROMS_DIR, list, max, count);
 	count = scan_dir(AGBRA_GB_ROMS_DIR, list, max, count);
 	count = scan_dir("sdmc:/roms/gbc", list, max, count);
+	count = scan_dir(AGBRA_NES_ROMS_DIR, list, max, count);
+	count = scan_dir(AGBRA_MINI_ROMS_DIR, list, max, count);
+	count = scan_dir("sdmc:/roms/min", list, max, count);
 	count = scan_dir("sdmc:/gba", list, max, count);
 	count = scan_dir("sdmc:/gb", list, max, count);
 	count = scan_dir("sdmc:/roms", list, max, count);

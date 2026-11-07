@@ -77,6 +77,8 @@ void app_ensure_dirs(void) {
 	fs_mkdir_p(AGBRA_ROMS_DIR);
 	fs_mkdir_p(AGBRA_GB_ROMS_DIR);
 	fs_mkdir_p(AGBRA_GBC_ROMS_DIR);
+	fs_mkdir_p(AGBRA_NES_ROMS_DIR);
+	fs_mkdir_p(AGBRA_MINI_ROMS_DIR);
 }
 
 void app_basename(const char* path, char* out, size_t outLen) {

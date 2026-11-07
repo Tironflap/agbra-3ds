@@ -278,7 +278,8 @@ else ifeq ($(platform), ctr)
 	CFLAGS += -fomit-frame-pointer -ffast-math
 	# 2MB code cache sits just under 0x02000000. A 10MB cache plus a
 	# 32MB ROM buffer collides with that mapping on an old 3DS.
-	CFLAGS += -DSMALL_TRANSLATION_CACHE -DROM_BUFFER_SIZE=16
+	# 8 x 1MB. A larger buffer plus FCEUmm's tables reaches the JIT map at 0x01E00000.
+	CFLAGS += -DSMALL_TRANSLATION_CACHE -DROM_BUFFER_SIZE=8
 	CFLAGS += -DHAVE_NO_LANGEXTRA
 	# MSYS rewrites "-I./" before a native Windows gcc sees it, so the
 	# 3ds/ headers included from libretro/ are missed. CURDIR is absolute.

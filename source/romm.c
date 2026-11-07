@@ -153,7 +153,8 @@ static void take_string(const char* obj, const char* end, const char* key, char*
 }
 
 static int slug_ok(const char* slug) {
-	return strcmp(slug, "gb") == 0 || strcmp(slug, "gbc") == 0 || strcmp(slug, "gba") == 0;
+	return strcmp(slug, "gb") == 0 || strcmp(slug, "gbc") == 0 || strcmp(slug, "gba") == 0 ||
+		strcmp(slug, "nes") == 0 || strcmp(slug, "fds") == 0 || strcmp(slug, "pokemini") == 0;
 }
 
 static void add_platform(const char* obj, const char* end) {
@@ -341,6 +342,8 @@ static void queue_download(void) {
 	const char* dir = AGBRA_ROMS_DIR;
 	if (strcmp(s_slug, "gb") == 0) dir = AGBRA_GB_ROMS_DIR;
 	else if (strcmp(s_slug, "gbc") == 0) dir = AGBRA_GBC_ROMS_DIR;
+	else if (strcmp(s_slug, "nes") == 0 || strcmp(s_slug, "fds") == 0) dir = AGBRA_NES_ROMS_DIR;
+	else if (strcmp(s_slug, "pokemini") == 0) dir = AGBRA_MINI_ROMS_DIR;
 	fs_mkdir_p(dir);
 	char path[512];
 	snprintf(path, sizeof(path), "%s/%s", dir, file);
@@ -400,7 +403,7 @@ static void RC_CCONV on_platforms(const rc_api_server_response_t* resp, void* ud
 	parse_rows(resp->body, resp->body_length, 0, add_platform);
 	s_phase = ROMM_PLATFORMS;
 	if (s_count == 0)
-		snprintf(s_message, sizeof(s_message), "No GB, GBC, or GBA platforms on this server.");
+		snprintf(s_message, sizeof(s_message), "No GB, GBC, GBA, NES, or Mini platforms.");
 }
 
 static void RC_CCONV on_roms(const rc_api_server_response_t* resp, void* ud) {

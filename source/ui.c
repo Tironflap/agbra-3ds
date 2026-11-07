@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "config.h"
 #include "emu.h"
+#include "guest.h"
 #include "fs.h"
 #include "ra.h"
 #include "romm.h"
@@ -156,7 +157,7 @@ static void draw_browser(void) {
 	cls();
 	header();
 	if (s_romCount == 0) {
-		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba\n  sdmc:/roms/gb\n  sdmc:/roms/gbc\n\nL downloads from a RomM server.\n");
+		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba   /gb   /gbc\n  sdmc:/roms/nes   /pokemini\n\nL downloads from a RomM server.\n");
 	} else {
 		const int rows = 18;
 		if (g_app.browserIndex < g_app.browserTop) g_app.browserTop = g_app.browserIndex;
@@ -268,6 +269,8 @@ static void draw_playing(void) {
 	ra_rich_presence(rp, sizeof(rp));
 	if (rp[0]) printf("%s\n", rp);
 	printf("\nL+R+Down  menu\n");
+	if (emu_guest() == GUEST_MINI)
+		printf("R is C    L shakes    Select power\n");
 	if (!g_app.hardcore) printf("X save  Y load  ZL or touch turbo\n");
 	else printf("Hardcore: states and turbo locked\n");
 	footer_status();

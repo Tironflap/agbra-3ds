@@ -4,6 +4,7 @@
 #include "config.h"
 #include "fastgba.h"
 #include "fs.h"
+#include "guest.h"
 #include "video.h"
 
 #include <3ds.h>
@@ -34,14 +35,26 @@ static int s_vh = GBA_HEIGHT;
 static int s_stride = GBA_WIDTH;
 
 static int emu_is_gb(void) {
-	if (s_fast) return 0;
+	if (s_fast || guest_kind()) return 0;
 	return s_core && s_core->platform && s_core->platform(s_core) == mPLATFORM_GB;
 }
 
+static int path_ext(const char* path, const char* ext) {
+	const char* dot = path ? strrchr(path, '.') : NULL;
+	return dot && strcasecmp(dot, ext) == 0;
+}
+
 static int path_is_gba(const char* path) {
-	const char* dot = strrchr(path, '.');
-	if (!dot) return 0;
-	return strcasecmp(dot, ".gba") == 0 || strcasecmp(dot, ".agb") == 0;
+	return path_ext(path, ".gba") || path_ext(path, ".agb");
+}
+
+static int path_is_nes(const char* path) {
+	return path_ext(path, ".nes") || path_ext(path, ".unf") ||
+		path_ext(path, ".unif") || path_ext(path, ".fds");
+}
+
+static int path_is_mini(const char* path) {
+	return path_ext(path, ".min");
 }
 
 static int rom_is_gbc(const char* path) {
@@ -75,15 +88,17 @@ void emu_exit(void) {
 }
 
 bool emu_loaded(void) {
-	return s_loaded && (s_core || s_fast);
+	return s_loaded && (s_core || s_fast || guest_kind());
 }
 
 const uint16_t* emu_pixels(void) {
+	if (guest_kind()) return guest_pixels();
 	if (s_fast) return fastgba_pixels();
 	return s_pixels;
 }
 
 int emu_stride(void) {
+	if (guest_kind()) return guest_stride();
 	if (s_fast) return fastgba_stride();
 	return s_stride;
 }
@@ -97,9 +112,15 @@ int emu_height(void) {
 }
 
 int emu_ra_console(void) {
+	if (guest_kind() == GUEST_NES) return RC_CONSOLE_NINTENDO;
+	if (guest_kind() == GUEST_MINI) return RC_CONSOLE_POKEMON_MINI;
 	if (!emu_is_gb()) return RC_CONSOLE_GAMEBOY_ADVANCE;
 	if (rom_is_gbc(s_path)) return RC_CONSOLE_GAMEBOY_COLOR;
 	return RC_CONSOLE_GAMEBOY;
+}
+
+int emu_guest(void) {
+	return guest_kind();
 }
 
 const uint8_t* emu_rom_data(size_t* size) {
@@ -116,7 +137,8 @@ const char* emu_rom_path(void) {
 }
 
 void emu_unload(void) {
-	if (s_fast || s_core) emu_flush_save();
+	if (s_fast || s_core || guest_kind()) emu_flush_save();
+	if (guest_kind()) guest_unload();
 	if (s_fast) {
 		fastgba_unload();
 		s_fast = 0;
@@ -188,6 +210,27 @@ int emu_load_pump(void) {
 				return 2;
 			}
 			app_set_status("Dynarec unavailable — using the interpreter");
+		}
+		if (path_is_nes(s_path) || path_is_mini(s_path)) {
+			char stem[256];
+			int mini = path_is_mini(s_path);
+			app_stem(s_path, stem, sizeof(stem));
+			snprintf(s_savePath, sizeof(s_savePath),
+				AGBRA_SAVES_DIR "/%s.%s", stem, mini ? "eep" : "sav");
+			if (guest_load(mini ? GUEST_MINI : GUEST_NES, s_path, s_savePath)) {
+				s_vw = guest_width();
+				s_vh = guest_height();
+				s_stride = guest_stride();
+				video_set_skip(0);
+				video_set_dyn(0);
+				s_loaded = true;
+				s_step = 0;
+				snprintf(s_phase, sizeof(s_phase), "ready");
+				return 2;
+			}
+			snprintf(s_phase, sizeof(s_phase), mini ? "fail: pokemon mini" : "fail: nes");
+			s_step = 0;
+			return 0;
 		}
 		s_core = mCoreFind(s_path);
 		if (!s_core) {
@@ -405,7 +448,7 @@ void emu_apply_options(void) {
 void emu_note_frame_ms(int ms) {
 	/* The dynarec is paced by vblank. Auto-skip during the first
 	   compiled blocks would stick and leave the picture at 30 Hz. */
-	if (s_fast) return;
+	if (s_fast || guest_kind()) return;
 	if (g_cfg.frameskip >= 0) return;
 	if (ms < 1) ms = 1;
 	/* score is the emulated rate this batch would hold if we didn't sleep.
@@ -466,15 +509,24 @@ void emu_note_frame_ms(int ms) {
 }
 
 int emu_frameskip(void) {
-	if (s_fast) return 0;
+	if (s_fast || guest_kind()) return 0;
 	return s_liveSkip < 0 ? 0 : s_liveSkip;
 }
 
 int emu_is_fast(void) {
-	return s_fast;
+	/* NES and Pokemon Mini also finish a frame inside one refresh.
+	   A second vblank wait would cap them at 30 Hz. */
+	return s_fast || guest_kind();
 }
 
 bool emu_run_frame(void) {
+	if (guest_kind()) {
+		guest_run();
+		s_vw = guest_width();
+		s_vh = guest_height();
+		s_stride = guest_stride();
+		return true;
+	}
 	if (s_fast) {
 		fastgba_run();
 		return true;
@@ -488,6 +540,10 @@ bool emu_run_frame(void) {
 }
 
 void emu_reset(void) {
+	if (guest_kind()) {
+		guest_reset();
+		return;
+	}
 	if (s_fast) {
 		fastgba_reset();
 		return;
@@ -496,6 +552,10 @@ void emu_reset(void) {
 }
 
 void emu_set_keys(uint32_t keys) {
+	if (guest_kind()) {
+		guest_set_keys(keys);
+		return;
+	}
 	if (s_fast) {
 		fastgba_set_keys(keys);
 		return;
@@ -504,6 +564,7 @@ void emu_set_keys(uint32_t keys) {
 }
 
 uint8_t emu_read8(uint32_t address) {
+	if (guest_kind()) return guest_read8(address);
 	if (s_fast) return fastgba_read8(address);
 	if (!s_core) return 0;
 	return (uint8_t)s_core->busRead8(s_core, address);
@@ -514,7 +575,7 @@ void emu_read(uint32_t address, uint8_t* buf, uint32_t n) {
 }
 
 void emu_audio_pump(void) {
-	if (!s_core) return;
+	if (s_fast || guest_kind() || !s_core) return;
 	struct mAudioBuffer* buf = s_core->getAudioBuffer(s_core);
 	if (!buf) return;
 	int16_t tmp[2048];
@@ -523,6 +584,10 @@ void emu_audio_pump(void) {
 }
 
 static void flush_save(int sync) {
+	if (guest_kind()) {
+		guest_flush_save(s_savePath, sync);
+		return;
+	}
 	if (s_fast) {
 		fastgba_flush_save(s_savePath, sync);
 		return;
@@ -559,6 +624,13 @@ void emu_flush_save_soft(void) {
 
 bool emu_save_state(int slot) {
 	if (g_app.hardcore) return false;
+	if (guest_kind()) {
+		char stem[256], path[512];
+		const char* tag = guest_kind() == GUEST_MINI ? "min" : "nes";
+		app_stem(s_path, stem, sizeof(stem));
+		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.%s.ss%d", stem, tag, slot);
+		return guest_save_state(path);
+	}
 	if (s_fast) {
 		char stem[256], path[512];
 		app_stem(s_path, stem, sizeof(stem));
@@ -590,6 +662,13 @@ bool emu_save_state(int slot) {
 
 bool emu_load_state(int slot) {
 	if (g_app.hardcore) return false;
+	if (guest_kind()) {
+		char stem[256], path[512];
+		const char* tag = guest_kind() == GUEST_MINI ? "min" : "nes";
+		app_stem(s_path, stem, sizeof(stem));
+		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.%s.ss%d", stem, tag, slot);
+		return guest_load_state(path);
+	}
 	if (s_fast) {
 		char stem[256], path[512];
 		app_stem(s_path, stem, sizeof(stem));

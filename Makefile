@@ -58,6 +58,8 @@ LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) \
 			-Wl,--wrap,read,--wrap,write
 
 LIBS	:= $(TOPDIR)/third_party/gpsp/gpsp_libretro_ctr.a \
+			$(TOPDIR)/third_party/fceumm/fceumm_libretro_ctr.a \
+			$(TOPDIR)/third_party/PokeMini/pokemini_libretro_ctr.a \
 			-lmgba -lz -lmbedtls -lmbedx509 -lmbedcrypto -lctru -lm -lstdc++
 
 #---------------------------------------------------------------------------------
@@ -141,12 +143,22 @@ endif
 .PHONY: all clean deps
 
 GPSP_LIB	:=	$(TOPDIR)/third_party/gpsp/gpsp_libretro_ctr.a
+NES_LIB		:=	$(TOPDIR)/third_party/fceumm/fceumm_libretro_ctr.a
+MINI_LIB	:=	$(TOPDIR)/third_party/PokeMini/pokemini_libretro_ctr.a
 
-all: $(GPSP_LIB) $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
+all: $(GPSP_LIB) $(NES_LIB) $(MINI_LIB) $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 $(GPSP_LIB):
 	$(MAKE) -C $(TOPDIR)/third_party/gpsp platform=ctr -j$(shell nproc)
+
+$(NES_LIB):
+	$(MAKE) -C $(TOPDIR)/third_party/fceumm platform=ctr -j$(shell nproc)
+	sh $(TOPDIR)/tools/prefix_syms.sh nes_ $(NES_LIB)
+
+$(MINI_LIB):
+	$(MAKE) -C $(TOPDIR)/third_party/PokeMini platform=ctr -j$(shell nproc)
+	sh $(TOPDIR)/tools/prefix_syms.sh pm_ $(MINI_LIB)
 
 deps:
 	./fetch-deps.sh
