@@ -27,6 +27,11 @@ bool retro_serialize(void* data, size_t size);
 bool retro_unserialize(const void* data, size_t size);
 
 extern int dynarec_enable;
+/* gpSP reads this as RetroArch's svcBackdoor flag. Left undefined, the
+ * linker places the weak symbol at address 0 and the core-option check
+ * data-aborts on hardware. Cache flushes use Rosalina svc 0x80, so the
+ * flag stays set and the dynarec option is kept. */
+unsigned int __ctr_svchax = 1;
 extern uint8_t gamepak_backup[];
 extern uint32_t backup_type;
 extern uint32_t backup_type_reset;

@@ -2533,28 +2533,45 @@ u8 *load_gamepak_page(u32 physical_index)
   return swap_location;
 }
 
-void init_gamepak_buffer(void)
+static void gamepak_reset_lru(void)
 {
   unsigned i;
-  // Try to allocate up to 32 blocks of 1MB each
-  gamepak_buffer_count = 0;
-  while (gamepak_buffer_count < ROM_BUFFER_SIZE)
+  unsigned n = 32 * gamepak_buffer_count;
+  if (!n)
+    return;
+  if (n > 1024)
+    n = 1024;
+  for (i = 0; i < n; i++)
+  {
+    gamepak_blk_queue[i].next_lru = (u16)(i + 1);
+    gamepak_blk_queue[i].phy_rom = -1;
+  }
+  gamepak_lru_head = 0;
+  gamepak_lru_tail = (u16)(n - 1);
+}
+
+static void grow_gamepak_buffers(u32 want)
+{
+  if (want > ROM_BUFFER_SIZE)
+    want = ROM_BUFFER_SIZE;
+  if (want > 32)
+    want = 32;
+  while (gamepak_buffer_count < want)
   {
     void *ptr = malloc(gamepak_buffer_blocksize);
     if (!ptr)
       break;
     gamepak_buffers[gamepak_buffer_count++] = (u8*)ptr;
   }
+  gamepak_reset_lru();
+}
 
-  // Initialize the memory map structure
-  for (i = 0; i < 1024; i++)
-  {
-    gamepak_blk_queue[i].next_lru = (u16)(i + 1);
-    gamepak_blk_queue[i].phy_rom = -1;
-  }
-
-  gamepak_lru_head = 0;
-  gamepak_lru_tail = 32 * gamepak_buffer_count - 1;
+void init_gamepak_buffer(void)
+{
+  /* One block is enough to read a header. The cart's own size is
+   * allocated in load_gamepak_raw. Filling all 32 here empties the heap. */
+  gamepak_buffer_count = 0;
+  grow_gamepak_buffers(1);
 }
 
 bool gamepak_must_swap(void)
@@ -2927,8 +2944,11 @@ static s32 load_gamepak_raw(const char *name)
       filestream_seek(gamepak_file_large, 0, SEEK_SET);
     }
 
-    // Load stuff in 1MB chunks
+    // Load stuff in 1MB chunks. Grow to this cart so a 16MB game is
+    // resident. An 8MB cap forces Pokemon Emerald to page every bank
+    // from the SD card.
     u32 buf_blocks = (raw_size + gamepak_buffer_blocksize-1) / (gamepak_buffer_blocksize);
+    grow_gamepak_buffers(buf_blocks);
     u32 rom_blocks = gamepak_size >> 15;
     u32 ldblks = buf_blocks < gamepak_buffer_count ?
                     buf_blocks : gamepak_buffer_count;

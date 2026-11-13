@@ -18,3 +18,5 @@ void video_console_target(void);
 void video_present_bottom(void);
 void video_set_skip(int skip);
 void video_set_dyn(int on);
+/* show=1 draws the gpSP map result on the HUD while the interpreter runs. */
+void video_set_jit(unsigned code, int show);

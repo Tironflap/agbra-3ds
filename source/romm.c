@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define ROMM_PAGE 20
 #define ROMM_MAX 20
@@ -192,8 +193,26 @@ static void first_file_name(const char* obj, const char* end, char* out, size_t 
 	}
 }
 
+static int s_dropped;
+
+static int rom_on_this_platform(const char* obj, const char* end) {
+	int pid = 0;
+	if (value_int(value_of(obj, end, "platform_id"), &pid) && pid > 0)
+		return pid == s_platformId;
+	char slug[32];
+	take_string(obj, end, "platform_slug", slug, sizeof(slug));
+	if (!slug[0]) take_string(obj, end, "platform_fs_slug", slug, sizeof(slug));
+	if (!slug[0]) return 1;
+	for (char* c = slug; *c; c++) *c = (char)tolower((unsigned char)*c);
+	return strcmp(slug, s_slug) == 0;
+}
+
 static void add_rom(const char* obj, const char* end) {
 	if (s_count >= ROMM_MAX) return;
+	if (!rom_on_this_platform(obj, end)) {
+		s_dropped++;
+		return;
+	}
 	if (value_bool(value_of(obj, end, "is_physical")) == 1) return;
 	if (value_bool(value_of(obj, end, "has_file_on_disk")) == 0) return;
 	int id = 0;
@@ -311,10 +330,16 @@ static void fetch_roms(void) {
 	s_phase = ROMM_BUSY;
 	s_want = 2;
 	s_message[0] = 0;
-	char url[320];
+	char url[512];
 	char auth[900];
-	snprintf(url, sizeof(url), "%s/api/roms?platform_id=%d&limit=%d&offset=%d",
-		g_cfg.romm_url, s_platformId, ROMM_PAGE, s_offset);
+	/* platform_id is the older filter. platform_ids is what current RomM
+	   actually applies. Without either, every console gets the whole library.
+	   The index flags skip a full-library id list that is hundreds of KB. */
+	snprintf(url, sizeof(url),
+		"%s/api/roms?platform_id=%d&platform_ids=%d&limit=%d&offset=%d"
+		"&order_by=name&order_dir=asc&group_by_meta_id=false"
+		"&with_rom_id_index=false&with_char_index=false&with_filter_values=false",
+		g_cfg.romm_url, s_platformId, s_platformId, ROMM_PAGE, s_offset);
 	auth_value(auth, sizeof(auth));
 	http_request(url, NULL, NULL, auth, NULL, on_roms, NULL);
 }
@@ -340,7 +365,19 @@ static void queue_download(void) {
 	file[j] = 0;
 	if (!file[0]) strncpy(file, "game.gba", sizeof(file) - 1);
 	const char* dir = AGBRA_ROMS_DIR;
-	if (strcmp(s_slug, "gb") == 0) dir = AGBRA_GB_ROMS_DIR;
+	const char* dot = strrchr(file, '.');
+	if (dot && (!strcasecmp(dot, ".nes") || !strcasecmp(dot, ".fds") ||
+		!strcasecmp(dot, ".unf") || !strcasecmp(dot, ".unif")))
+		dir = AGBRA_NES_ROMS_DIR;
+	else if (dot && !strcasecmp(dot, ".min"))
+		dir = AGBRA_MINI_ROMS_DIR;
+	else if (dot && !strcasecmp(dot, ".gbc"))
+		dir = AGBRA_GBC_ROMS_DIR;
+	else if (dot && (!strcasecmp(dot, ".gb") || !strcasecmp(dot, ".gbb")))
+		dir = AGBRA_GB_ROMS_DIR;
+	else if (dot && (!strcasecmp(dot, ".gba") || !strcasecmp(dot, ".agb")))
+		dir = AGBRA_ROMS_DIR;
+	else if (strcmp(s_slug, "gb") == 0) dir = AGBRA_GB_ROMS_DIR;
 	else if (strcmp(s_slug, "gbc") == 0) dir = AGBRA_GBC_ROMS_DIR;
 	else if (strcmp(s_slug, "nes") == 0 || strcmp(s_slug, "fds") == 0) dir = AGBRA_NES_ROMS_DIR;
 	else if (strcmp(s_slug, "pokemini") == 0) dir = AGBRA_MINI_ROMS_DIR;
@@ -414,12 +451,16 @@ static void RC_CCONV on_roms(const rc_api_server_response_t* resp, void* ud) {
 	s_retryAuth = 0;
 	s_count = 0;
 	s_total = 0;
+	s_dropped = 0;
 	if (status < 200 || status >= 300) {
 		s_phase = ROMM_ERROR;
 		set_http_message(status, resp ? resp->body : NULL, resp ? resp->body_length : 0);
 		return;
 	}
 	parse_rows(resp->body, resp->body_length, 1, add_rom);
+	/* The page was the whole library. Do not offer the next page of other consoles. */
+	if (s_dropped && s_count < ROMM_PAGE)
+		s_total = s_offset + s_count;
 	s_phase = ROMM_ROMS;
 	if (s_count == 0) snprintf(s_message, sizeof(s_message), "No games on this page.");
 }

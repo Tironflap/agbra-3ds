@@ -276,10 +276,10 @@ else ifeq ($(platform), ctr)
 	CFLAGS += -march=armv6k -mtune=mpcore -mfloat-abi=hard
 	CFLAGS += -Wall -mword-relocations
 	CFLAGS += -fomit-frame-pointer -ffast-math
-	# 2MB code cache sits just under 0x02000000. A 10MB cache plus a
-	# 32MB ROM buffer collides with that mapping on an old 3DS.
-	# 8 x 1MB. A larger buffer plus FCEUmm's tables reaches the JIT map at 0x01E00000.
-	CFLAGS += -DSMALL_TRANSLATION_CACHE -DROM_BUFFER_SIZE=8
+	# Code cache is mirrored at 0x01DA0000. The libc heap lives at
+	# 0x08000000, so the ROM blocks do not collide with it. The cap is
+	# 32 x 1MB; load allocates only this cart's size.
+	CFLAGS += -DSMALL_TRANSLATION_CACHE -DROM_BUFFER_SIZE=32
 	CFLAGS += -DHAVE_NO_LANGEXTRA
 	# MSYS rewrites "-I./" before a native Windows gcc sees it, so the
 	# 3ds/ headers included from libretro/ are missed. CURDIR is absolute.

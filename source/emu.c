@@ -144,6 +144,7 @@ void emu_unload(void) {
 		s_fast = 0;
 		video_set_dyn(0);
 	}
+	video_set_jit(0, 0);
 	if (s_core) {
 		/* The core closes the save VFile inside deinit. Closing it again
 		   frees the buffer before the write is safe to trust. */
@@ -204,12 +205,18 @@ int emu_load_pump(void) {
 				s_stride = fastgba_stride();
 				video_set_skip(0);
 				video_set_dyn(1);
+				video_set_jit(0, 0);
 				s_loaded = true;
 				s_step = 0;
 				snprintf(s_phase, sizeof(s_phase), "ready");
 				return 2;
 			}
-			app_set_status("Dynarec unavailable — using the interpreter");
+			{
+				extern int gpsp_jit_result;
+				video_set_jit((unsigned)gpsp_jit_result, 1);
+				app_set_status("Dynarec unavailable (%08lx) — interpreter",
+					(unsigned long)gpsp_jit_result);
+			}
 		}
 		if (path_is_nes(s_path) || path_is_mini(s_path)) {
 			char stem[256];

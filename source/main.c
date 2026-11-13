@@ -1,4 +1,5 @@
 #include <3ds.h>
+#include <3ds/allocator/mappable.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,83 @@ uint32_t* romBuffer = NULL;
 size_t romBufferSize = 0;
 FS_Archive sdmcArchive;
 u32 __stacksize__ = 384 * 1024;
+
+/* gpSP's recompiler mirrors one private kernel block onto 0x01DA0000.
+ * libctru otherwise commits every free page into the libc heap, and the
+ * kernel will not mirror a slice of that block. Leave this much commit
+ * unused, then take it as its own block before anything else can. */
+#define AGBRA_JIT_RESERVE 0x260000u
+uint32_t agbra_jit_block;
+
+extern char* fake_heap_start;
+extern char* fake_heap_end;
+extern u32 __ctru_heap;
+extern u32 __ctru_heap_size;
+extern u32 __ctru_linear_heap;
+extern u32 __ctru_linear_heap_size;
+
+void __system_allocateHeaps(void) {
+	Result rc;
+	Handle reslimit = 0;
+	s64 maxCommit = 0, currentCommit = 0;
+	ResourceLimitType reslimitType = RESLIMIT_COMMIT;
+	u32 tmp = 0;
+	u32 remaining;
+	bool auto_app_sz, auto_linear_sz;
+
+	rc = svcGetResourceLimit(&reslimit, CUR_PROCESS_HANDLE);
+	if (R_FAILED(rc))
+		svcBreak(USERBREAK_PANIC);
+	svcGetResourceLimitLimitValues(&maxCommit, reslimit, &reslimitType, 1);
+	svcGetResourceLimitCurrentValues(&currentCommit, reslimit, &reslimitType, 1);
+	svcCloseHandle(reslimit);
+
+	remaining = (u32)(maxCommit - currentCommit) & ~0xFFF;
+	if (__ctru_heap_size + __ctru_linear_heap_size > remaining)
+		svcBreak(USERBREAK_PANIC);
+
+	auto_app_sz = __ctru_heap_size == 0;
+	auto_linear_sz = __ctru_linear_heap_size == 0;
+	if (auto_app_sz && auto_linear_sz) {
+		__ctru_linear_heap_size = (remaining / 2) & ~0xFFF;
+		__ctru_heap_size = remaining - __ctru_linear_heap_size;
+		if (__ctru_heap_size > (24u << 20)) {
+			__ctru_heap_size = 24u << 20;
+			__ctru_linear_heap_size = remaining - __ctru_heap_size;
+			if (__ctru_linear_heap_size > (32u << 20)) {
+				__ctru_linear_heap_size = 32u << 20;
+				__ctru_heap_size = remaining - __ctru_linear_heap_size;
+			}
+		}
+	} else if (auto_app_sz) {
+		__ctru_heap_size = remaining - __ctru_linear_heap_size;
+	} else if (auto_linear_sz) {
+		__ctru_linear_heap_size = remaining - __ctru_heap_size;
+	}
+
+	if (__ctru_heap_size > (u32)(OS_HEAP_AREA_END - OS_HEAP_AREA_BEGIN)) {
+		if (auto_linear_sz)
+			__ctru_linear_heap_size += __ctru_heap_size - (u32)(OS_HEAP_AREA_END - OS_HEAP_AREA_BEGIN);
+		__ctru_heap_size = (u32)(OS_HEAP_AREA_END - OS_HEAP_AREA_BEGIN);
+	}
+	if (__ctru_heap_size > AGBRA_JIT_RESERVE + (8u << 20))
+		__ctru_heap_size -= AGBRA_JIT_RESERVE;
+
+	rc = svcControlMemory(&__ctru_heap, OS_HEAP_AREA_BEGIN, 0, __ctru_heap_size, MEMOP_ALLOC, MEMPERM_READ | MEMPERM_WRITE);
+	if (R_FAILED(rc))
+		svcBreak(USERBREAK_PANIC);
+	rc = svcControlMemory(&__ctru_linear_heap, 0, 0, __ctru_linear_heap_size, MEMOP_ALLOC_LINEAR, MEMPERM_READ | MEMPERM_WRITE);
+	if (R_FAILED(rc))
+		svcBreak(USERBREAK_PANIC);
+
+	agbra_jit_block = 0;
+	if (R_SUCCEEDED(svcControlMemory(&tmp, 0, 0, AGBRA_JIT_RESERVE, MEMOP_ALLOC, MEMPERM_READ | MEMPERM_WRITE)))
+		agbra_jit_block = tmp;
+
+	mappableInit(OS_MAP_AREA_BEGIN, OS_MAP_AREA_END);
+	fake_heap_start = (char*)__ctru_heap;
+	fake_heap_end = fake_heap_start + __ctru_heap_size;
+}
 
 void userAppInit(void) {
 	/* libmgba is built without FIXED_ROM_BUFFER, so the cart is allocated

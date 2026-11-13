@@ -37,14 +37,25 @@ void* linearMemAlign(size_t size, size_t alignment);
 void linearFree(void* mem);
 #if defined(HAVE_DYNAREC)
 #include <malloc.h>
+#include <unistd.h>
 #include "3ds/3ds_utils.h"
-#define MEMOP_PROT   6
-#define MEMOP_MAP 4
-#define MEMOP_UNMAP 5
+#define MEMOP_FREE    1
+#define MEMOP_ALLOC   3
+#define MEMOP_MAP     4
+#define MEMOP_UNMAP   5
+#define MEMOP_PROT    6
 int32_t svcDuplicateHandle(uint32_t* out, uint32_t original);
 int32_t svcCloseHandle(uint32_t handle);
+int32_t svcControlMemory(uint32_t* out, uint32_t addr0, uint32_t addr1, uint32_t size, uint32_t op, uint32_t perm);
 int32_t svcControlProcessMemory(uint32_t process, void* addr0, void* addr1, uint32_t size, uint32_t type, uint32_t perm);
+/* libctru commits the whole application region as one heap block.
+ * fake_heap_end is the newlib break limit for that block. */
+extern char* fake_heap_end;
+extern uint32_t __ctru_heap_size;
+extern uint32_t agbra_jit_block;
 static int translation_caches_inited = 0;
+static int jit_direct = 0;
+static uint32_t jit_src = 0;
 #endif
 #endif
 
@@ -117,6 +128,7 @@ static retro_set_rumble_state_t rumble_cb;
 struct retro_perf_callback perf_cb;
 
 int dynarec_enable;
+int gpsp_jit_result;
 boot_mode selected_boot_mode = boot_game;
 int sprite_limit = 1;
 
@@ -599,6 +611,158 @@ void retro_get_system_av_info(struct retro_system_av_info* info)
    info->timing.sample_rate = sound_frequency;
 }
 
+#if defined(_3DS) && defined(HAVE_DYNAREC)
+/* Mirror one kernel block onto the fixed recompiler window. Generated
+ * code calls the absolute addresses in cpu.h, so the source has to be
+ * the whole block: a memalign slice of the libc heap is rejected. */
+static int map_mirror(uint32_t src, uint32_t base, uint32_t size)
+{
+   uint32_t handle = 0;
+   int32_t rc = svcDuplicateHandle(&handle, 0xFFFF8001);
+   if (rc != 0) {
+      gpsp_jit_result = rc;
+      return 0;
+   }
+   rc = svcControlProcessMemory(handle, (void*)(uintptr_t)base,
+                                 (void*)(uintptr_t)src, size, MEMOP_MAP, 7);
+   svcCloseHandle(handle);
+   if (rc != 0) {
+      gpsp_jit_result = rc;
+      return 0;
+   }
+   jit_src = src;
+   jit_direct = 0;
+   ram_translation_cache_ptr = (u8*)(uintptr_t)src;
+   rom_translation_cache_ptr = ram_translation_cache_ptr + RAM_TRANSLATION_CACHE_SIZE;
+   rom_translation_ptr = rom_translation_cache;
+   ram_translation_ptr = ram_translation_cache;
+   ctr_flush_invalidate_cache();
+   translation_caches_inited = 1;
+   return 1;
+}
+
+static int map_jit_3ds(void)
+{
+   uint32_t base = (uint32_t)(uintptr_t)ram_translation_cache;
+   uint32_t size = (uint32_t)RAM_TRANSLATION_CACHE_SIZE +
+                   (uint32_t)ROM_TRANSLATION_CACHE_SIZE;
+   uint32_t got = 0;
+   int32_t rc;
+
+   gpsp_jit_result = 0;
+   jit_direct = 0;
+   jit_src = 0;
+   check_rosalina();
+
+   /* Startup left one private block uncommitted from the libc heap.
+    * Mirroring that whole block is what the kernel accepts. */
+   if (agbra_jit_block) {
+      if (map_mirror(agbra_jit_block, base, size))
+         return 1;
+      return 0;
+   }
+
+   rc = svcControlMemory(&got, 0, 0, size, MEMOP_ALLOC, 1 | 2);
+   if (rc == 0 && got) {
+      if (map_mirror(got, base, size))
+         return 1;
+      svcControlMemory(&got, got, 0, size, MEMOP_FREE, 0);
+   }
+
+   {
+      void* slice = memalign(0x1000, size);
+      if (slice) {
+         if (map_mirror((uint32_t)(uintptr_t)slice, base, size))
+            return 1;
+         free(slice);
+      }
+   }
+
+   /* No free application pages: cut a page-aligned tail off the libc
+    * heap, before malloc has grown into it, and allocate that as its
+    * own block so the mirror is legal. */
+   {
+      uintptr_t end = (uintptr_t)fake_heap_end;
+      uintptr_t brk = (uintptr_t)sbrk(0);
+      uintptr_t tail;
+      char* saved_end;
+      uint32_t saved_size;
+
+      if (!end || end < size || (end & 0xFFF)) {
+         gpsp_jit_result = rc ? rc : -4;
+         return 0;
+      }
+      tail = end - size;
+      if (brk > tail) {
+         gpsp_jit_result = -6;
+         return 0;
+      }
+
+      saved_end = fake_heap_end;
+      saved_size = __ctru_heap_size;
+      fake_heap_end = (char*)tail;
+      if (__ctru_heap_size >= size)
+         __ctru_heap_size -= size;
+
+      got = 0;
+      rc = svcControlMemory(&got, (uint32_t)tail, 0, size, MEMOP_FREE, 0);
+      if (rc != 0) {
+         fake_heap_end = saved_end;
+         __ctru_heap_size = saved_size;
+         gpsp_jit_result = rc;
+         return 0;
+      }
+
+      got = 0;
+      rc = svcControlMemory(&got, 0, 0, size, MEMOP_ALLOC, 1 | 2);
+      if (rc != 0 || !got) {
+         uint32_t back = 0;
+         if (svcControlMemory(&back, (uint32_t)tail, 0, size, MEMOP_ALLOC, 1 | 2) == 0 &&
+             back == (uint32_t)tail) {
+            fake_heap_end = saved_end;
+            __ctru_heap_size = saved_size;
+         }
+         gpsp_jit_result = rc ? rc : -7;
+         return 0;
+      }
+      if (map_mirror(got, base, size))
+         return 1;
+      svcControlMemory(&got, got, 0, size, MEMOP_FREE, 0);
+      return 0;
+   }
+}
+
+static void unmap_jit_3ds(void)
+{
+   uint32_t base = (uint32_t)(uintptr_t)ram_translation_cache;
+   uint32_t size = (uint32_t)RAM_TRANSLATION_CACHE_SIZE +
+                   (uint32_t)ROM_TRANSLATION_CACHE_SIZE;
+   uint32_t handle = 0;
+   uint32_t tmp = 0;
+
+   if (!translation_caches_inited)
+      return;
+   if (svcDuplicateHandle(&handle, 0xFFFF8001) == 0) {
+      if (!jit_direct && jit_src)
+         svcControlProcessMemory(handle, (void*)(uintptr_t)base,
+                                  (void*)(uintptr_t)jit_src, size, MEMOP_UNMAP, 7);
+      else
+         svcControlProcessMemory(handle, (void*)(uintptr_t)base, 0, size,
+                                  MEMOP_PROT, 1 | 2);
+      svcCloseHandle(handle);
+   }
+   if (jit_direct)
+      svcControlMemory(&tmp, base, 0, size, MEMOP_FREE, 0);
+   else if (jit_src && jit_src != agbra_jit_block)
+      svcControlMemory(&tmp, jit_src, 0, size, MEMOP_FREE, 0);
+   jit_direct = 0;
+   jit_src = 0;
+   rom_translation_cache_ptr = NULL;
+   ram_translation_cache_ptr = NULL;
+   translation_caches_inited = 0;
+}
+#endif
+
 void retro_init(void)
 {
    u32 audio_sample_buffer_size;
@@ -632,51 +796,8 @@ void retro_init(void)
              "Failed to map the JIT translation cache; "
              "falling back to the interpreter\n");
   #elif defined(_3DS)
-   /* Luma opens privileged SVCs for homebrew, but it does not set the
-      old __ctr_svchax word. Try the map and keep the interpreter if the
-      pages cannot be made executable. */
    if (!translation_caches_inited)
-   {
-      uint32_t currentHandle;
-      int32_t mapRom;
-      int32_t mapRam;
-      check_rosalina();
-
-      rom_translation_cache_ptr  = memalign(0x1000, ROM_TRANSLATION_CACHE_SIZE);
-      ram_translation_cache_ptr  = memalign(0x1000, RAM_TRANSLATION_CACHE_SIZE);
-
-      mapRom = -1;
-      mapRam = -1;
-      if (rom_translation_cache_ptr && ram_translation_cache_ptr)
-      {
-         svcDuplicateHandle(&currentHandle, 0xFFFF8001);
-         mapRom = svcControlProcessMemory(currentHandle,
-                              rom_translation_cache, rom_translation_cache_ptr,
-                              ROM_TRANSLATION_CACHE_SIZE, MEMOP_MAP, 0b111);
-         mapRam = svcControlProcessMemory(currentHandle,
-                              ram_translation_cache, ram_translation_cache_ptr,
-                              RAM_TRANSLATION_CACHE_SIZE, MEMOP_MAP, 0b111);
-         svcCloseHandle(currentHandle);
-      }
-      if (mapRom == 0 && mapRam == 0)
-      {
-         rom_translation_ptr = rom_translation_cache;
-         ram_translation_ptr = ram_translation_cache;
-         ctr_flush_invalidate_cache();
-         translation_caches_inited = 1;
-      }
-      else
-      {
-         free(rom_translation_cache_ptr);
-         free(ram_translation_cache_ptr);
-         rom_translation_cache_ptr = NULL;
-         ram_translation_cache_ptr = NULL;
-         if (log_cb)
-            log_cb(RETRO_LOG_ERROR,
-                   "Failed to map the JIT translation cache; "
-                   "dynamic recompiler disabled\n");
-      }
-   }
+      map_jit_3ds();
   #elif defined(VITA)
    if(!translation_caches_inited){
       void* currentHandle;
@@ -759,24 +880,7 @@ void retro_deinit(void)
       unmap_jit_block(rom_translation_cache, ROM_TRANSLATION_CACHE_SIZE + RAM_TRANSLATION_CACHE_SIZE);
 #endif
 #if defined(_3DS) && defined(HAVE_DYNAREC)
-
-   if (translation_caches_inited)
-   {
-      uint32_t currentHandle;
-      svcDuplicateHandle(&currentHandle, 0xFFFF8001);
-      svcControlProcessMemory(currentHandle,
-                              rom_translation_cache, rom_translation_cache_ptr,
-                              ROM_TRANSLATION_CACHE_SIZE, MEMOP_UNMAP, 0b111);
-      svcControlProcessMemory(currentHandle,
-                              ram_translation_cache, ram_translation_cache_ptr,
-                              RAM_TRANSLATION_CACHE_SIZE, MEMOP_UNMAP, 0b111);
-      svcCloseHandle(currentHandle);
-      free(rom_translation_cache_ptr);
-      free(ram_translation_cache_ptr);
-      rom_translation_cache_ptr = NULL;
-      ram_translation_cache_ptr = NULL;
-      translation_caches_inited = 0;
-   }
+   unmap_jit_3ds();
 #endif
 
 #if defined(VITA) && defined(HAVE_DYNAREC)

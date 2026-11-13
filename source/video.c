@@ -11,6 +11,8 @@ static int s_fps = 0;
 static int s_fpsFrames = 0;
 static int s_skip = 0;
 static int s_dyn = 0;
+static int s_jitShow = 0;
+static unsigned s_jit = 0;
 static u64 s_fpsT = 0;
 static u64 s_presentMs = 0;
 
@@ -20,6 +22,11 @@ void video_set_skip(int skip) {
 
 void video_set_dyn(int on) {
 	s_dyn = on ? 1 : 0;
+}
+
+void video_set_jit(unsigned code, int show) {
+	s_jit = code;
+	s_jitShow = show ? 1 : 0;
 }
 
 /* RGB565 */
@@ -171,9 +178,11 @@ void video_present(const uint16_t* pixels, int width, int height, int stride) {
 	}
 
 	if (s_fpsT) {
-		char hud[24];
+		char hud[32];
 		if (s_dyn)
 			snprintf(hud, sizeof(hud), "%d fps  dyn", s_fps);
+		else if (s_jitShow)
+			snprintf(hud, sizeof(hud), "%d fps  nodyn %08lx", s_fps, (unsigned long)s_jit);
 		else
 			snprintf(hud, sizeof(hud), "%d fps  skip %d", s_fps, s_skip < 0 ? 0 : s_skip);
 		video_overlay_text(8, 4, hud, 0xFFE0);
