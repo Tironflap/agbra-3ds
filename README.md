@@ -111,8 +111,8 @@ The sign-in asks for the server URL (`http://192.168.1.10:8080`), your
 username, and either the password or a client API token that starts with
 `rmm_`. The password is not stored. The token is saved in `config.ini`,
 same as the RetroAchievements token. Create a long-lived token in RomM
-with access to read platforms and ROMs. Y on the RomM screen reads a QR
-with an outer camera. The pairing QR from RomM works, and so does a code
+with access to read platforms and ROMs. L on the ROM list opens the
+outer camera for a QR. The pairing QR from RomM works, and so does a code
 made at <https://tironflap.github.io/agbra-3ds/> from the server address
 and the `rmm_` token. That page draws the code in the browser and does not
 upload either value. Y on a game replaces a file that is already on the card.

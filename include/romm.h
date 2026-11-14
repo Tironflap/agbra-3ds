@@ -27,7 +27,11 @@ int romm_ready(void);
 RommPhase romm_phase(void);
 void romm_load_platforms(void);
 void romm_open(int index);
-void romm_page(int dir);
+/* Returns 1 when a new page was requested. */
+int romm_page(int dir);
+/* Jump to the previous or next letter in this platform's name list. */
+int romm_letter(int dir);
+char romm_current_letter(void);
 int romm_count(void);
 const RommRow* romm_at(int index);
 int romm_offset(void);

@@ -158,7 +158,7 @@ static void draw_browser(void) {
 	cls();
 	header();
 	if (s_romCount == 0) {
-		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba   /gb   /gbc\n  sdmc:/roms/nes   /pokemini\n\nL downloads from a RomM server.\n");
+		printf("No ROMs found.\n\nPlace games in:\n  sdmc:/roms/gba   /gb   /gbc\n  sdmc:/roms/nes   /pokemini\n\nL scans a RomM QR code.\n");
 	} else {
 		const int rows = 18;
 		if (g_app.browserIndex < g_app.browserTop) g_app.browserTop = g_app.browserIndex;
@@ -314,7 +314,11 @@ static void draw_romm_list(int games) {
 	int n = romm_count();
 	clamp_pick(n);
 	if (games) {
-		printf("%.38s\n", romm_platform_name()[0] ? romm_platform_name() : "RomM");
+		char letter = romm_current_letter();
+		if (letter)
+			printf("%.34s  %c\n", romm_platform_name()[0] ? romm_platform_name() : "RomM", letter);
+		else
+			printf("%.38s\n", romm_platform_name()[0] ? romm_platform_name() : "RomM");
 		if (romm_total() > 0)
 			printf("%d-%d of %d\n", romm_offset() + (n ? 1 : 0), romm_offset() + n, romm_total());
 	} else {
@@ -325,7 +329,7 @@ static void draw_romm_list(int games) {
 		if (romm_progress(prog, sizeof(prog))) printf("%s\n", prog);
 		else printf("Contacting RomM...\n");
 	} else if (romm_phase() == ROMM_NEED_LOGIN) {
-		printf("Y scans the pairing QR.\nX types a password instead.\n");
+		printf("L scans the QR from the page.\nX types a password instead.\n");
 	} else if (n == 0) {
 		printf("%.38s\n", romm_message()[0] ? romm_message() : "Nothing to show.");
 	} else {
@@ -342,8 +346,13 @@ static void draw_romm_list(int games) {
 	}
 	if (romm_message()[0] && n > 0) printf("%.38s\n", romm_message());
 	footer_status();
-	if (games) printf("\nA save  Y replace  L/R page  B back");
-	else printf("\nA open  X type  Y scan QR  B back");
+	if (games) printf("\nA save  Y replace  L/R letter  B back");
+	else printf("\nA open  X type  L scan QR  B back");
+}
+
+static void scan_romm_qr(void) {
+	char text[768];
+	if (qr_scan(text, sizeof(text)) == 1) romm_login_from_qr(text);
 }
 
 static int prompt_romm_login(void) {
@@ -401,12 +410,9 @@ static void handle_browser(u32 down) {
 	if (down & KEY_L) {
 		s_pick = 0;
 		s_pickTop = 0;
-		if (!romm_ready()) {
-			if (!prompt_romm_login()) return;
-		} else {
-			romm_load_platforms();
-		}
 		g_app.screen = APP_ROMM;
+		if (!romm_ready()) scan_romm_qr();
+		else romm_load_platforms();
 	}
 	if (down & KEY_SELECT) g_app.screen = APP_SETTINGS;
 }
@@ -414,12 +420,23 @@ static void handle_browser(u32 down) {
 static void handle_romm(u32 down, int games) {
 	int n = romm_count();
 	if (!romm_busy()) {
-		if (down & KEY_UP && s_pick > 0) s_pick--;
-		if (down & KEY_DOWN && s_pick + 1 < n) s_pick++;
+		if (down & KEY_UP) {
+			if (s_pick > 0) s_pick--;
+			else if (games && romm_offset() > 0 && romm_page(-1)) {
+				s_pick = 1000;
+				s_pickTop = 1000;
+			}
+		}
+		if (down & KEY_DOWN) {
+			if (s_pick + 1 < n) s_pick++;
+			else if (games && n > 0 && romm_page(1)) {
+				s_pick = 0;
+				s_pickTop = 0;
+			}
+		}
 	}
-	if (!games && (down & KEY_Y) && !romm_busy()) {
-		char text[768];
-		if (qr_scan(text, sizeof(text)) == 1) romm_login_from_qr(text);
+	if (!games && (down & (KEY_L | KEY_Y)) && !romm_busy()) {
+		scan_romm_qr();
 		return;
 	}
 	if (!games && (down & KEY_X)) {
@@ -428,14 +445,20 @@ static void handle_romm(u32 down, int games) {
 		return;
 	}
 	if (games && (down & KEY_L)) {
-		s_pick = 0;
-		s_pickTop = 0;
-		romm_page(-1);
+		int moved = romm_letter(-1);
+		if (!moved) moved = romm_page(-1);
+		if (moved) {
+			s_pick = 0;
+			s_pickTop = 0;
+		}
 	}
 	if (games && (down & KEY_R)) {
-		s_pick = 0;
-		s_pickTop = 0;
-		romm_page(1);
+		int moved = romm_letter(1);
+		if (!moved) moved = romm_page(1);
+		if (moved) {
+			s_pick = 0;
+			s_pickTop = 0;
+		}
 	}
 	if (!romm_busy() && (down & KEY_A) && n > 0) {
 		if (games) romm_download(s_pick, 0);

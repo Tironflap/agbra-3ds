@@ -17,6 +17,10 @@ static RommRow s_rows[ROMM_MAX];
 static int s_count;
 static int s_total;
 static int s_offset;
+static char s_letters[40];
+static int s_letterAt[40];
+static int s_letterCount;
+static char s_letter;
 static int s_platformId;
 static char s_slug[12];
 static char s_platformName[72];
@@ -281,6 +285,73 @@ static void parse_rows(const char* json, size_t len, int items, void (*fn)(const
 	if (br && br < end) walk_array(br, end, fn);
 }
 
+/* {"#": 0, "A": 12, "B": 40} — the offset of the first game of each letter. */
+static void parse_char_index(const char* json, size_t len) {
+	const char* end;
+	const char* key;
+	const char* brace;
+	const char* p;
+	s_letterCount = 0;
+	if (!json || !len) return;
+	end = json + len;
+	key = strstr(json, "\"char_index\"");
+	if (!key || key >= end) return;
+	brace = strchr(key, '{');
+	if (!brace || brace >= end) return;
+	p = brace + 1;
+	while (p < end && s_letterCount < 40) {
+		const char* close;
+		const char* colon;
+		char letter = 0;
+		int off;
+		int i;
+		while (p < end && *p != '"' && *p != '}') p++;
+		if (p >= end || *p == '}') break;
+		p++;
+		close = p;
+		while (close < end && *close != '"') close++;
+		if (close >= end) break;
+		if (close - p == 1) {
+			unsigned char c = (unsigned char)*p;
+			if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+			if (c >= 'A' && c <= 'Z') letter = (char)c;
+			else if (c == '#' || (c >= '0' && c <= '9')) letter = '#';
+		}
+		colon = strchr(close, ':');
+		if (!colon || colon >= end) break;
+		off = atoi(colon + 1);
+		if (off < 0) off = 0;
+		if (letter) {
+			for (i = 0; i < s_letterCount; i++) {
+				int before;
+				if (s_letters[i] == letter) {
+					if (off < s_letterAt[i]) s_letterAt[i] = off;
+					letter = 0;
+					break;
+				}
+				before = letter == '#' || (s_letters[i] != '#' && letter < s_letters[i]);
+				if (before) break;
+			}
+			if (letter) {
+				memmove(s_letters + i + 1, s_letters + i, (size_t)(s_letterCount - i));
+				memmove(s_letterAt + i + 1, s_letterAt + i, (size_t)(s_letterCount - i) * sizeof(int));
+				s_letters[i] = letter;
+				s_letterAt[i] = off;
+				s_letterCount++;
+			}
+		}
+		p = colon + 1;
+	}
+}
+
+static void sync_letter(void) {
+	int i;
+	s_letter = 0;
+	for (i = 0; i < s_letterCount; i++) {
+		if (s_letterAt[i] <= s_offset) s_letter = s_letters[i];
+	}
+}
+
 static void set_http_message(int status, const char* body, size_t len) {
 	s_message[0] = 0;
 	if (body && len) {
@@ -338,7 +409,7 @@ static void fetch_roms(void) {
 	snprintf(url, sizeof(url),
 		"%s/api/roms?platform_id=%d&platform_ids=%d&limit=%d&offset=%d"
 		"&order_by=name&order_dir=asc&group_by_meta_id=false"
-		"&with_rom_id_index=false&with_char_index=false&with_filter_values=false",
+		"&with_rom_id_index=false&with_char_index=true&with_filter_values=false",
 		g_cfg.romm_url, s_platformId, s_platformId, ROMM_PAGE, s_offset);
 	auth_value(auth, sizeof(auth));
 	http_request(url, NULL, NULL, auth, NULL, on_roms, NULL);
@@ -458,6 +529,8 @@ static void RC_CCONV on_roms(const rc_api_server_response_t* resp, void* ud) {
 		return;
 	}
 	parse_rows(resp->body, resp->body_length, 1, add_rom);
+	parse_char_index(resp->body, resp->body_length);
+	sync_letter();
 	/* The page was the whole library. Do not offer the next page of other consoles. */
 	if (s_dropped && s_count < ROMM_PAGE)
 		s_total = s_offset + s_count;
@@ -829,18 +902,48 @@ void romm_open(int index) {
 	strncpy(s_platformName, s_rows[index].name, sizeof(s_platformName) - 1);
 	s_platformName[sizeof(s_platformName) - 1] = 0;
 	s_offset = 0;
+	s_letterCount = 0;
+	s_letter = 0;
 	s_contentFallback = 0;
 	fetch_roms();
 }
 
-void romm_page(int dir) {
-	if (s_busy || s_phase != ROMM_ROMS || !dir) return;
-	int next = s_offset + dir * ROMM_PAGE;
-	if (next < 0) return;
-	if (s_total > 0 && next >= s_total) return;
-	if (s_total == 0 && dir > 0 && s_count < ROMM_PAGE) return;
+int romm_page(int dir) {
+	int next;
+	if (s_busy || s_phase != ROMM_ROMS || !dir) return 0;
+	next = s_offset + dir * ROMM_PAGE;
+	if (next < 0) return 0;
+	if (s_total > 0 && next >= s_total) return 0;
+	if (s_total == 0 && dir > 0 && s_count < ROMM_PAGE) return 0;
 	s_offset = next;
 	fetch_roms();
+	return 1;
+}
+
+int romm_letter(int dir) {
+	int cur = 0;
+	int next;
+	int i;
+	if (s_busy || s_phase != ROMM_ROMS || !dir || s_letterCount <= 0) return 0;
+	for (i = 0; i < s_letterCount; i++) {
+		if (s_letterAt[i] <= s_offset) cur = i;
+	}
+	if (dir < 0) {
+		if (s_offset > s_letterAt[cur]) next = cur;
+		else next = cur - 1;
+	} else {
+		next = cur + 1;
+	}
+	if (next < 0 || next >= s_letterCount) return 0;
+	if (s_letterAt[next] == s_offset) return 0;
+	s_offset = s_letterAt[next];
+	s_letter = s_letters[next];
+	fetch_roms();
+	return 1;
+}
+
+char romm_current_letter(void) {
+	return s_letter;
 }
 
 void romm_download(int index, int overwrite) {
