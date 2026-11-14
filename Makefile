@@ -16,14 +16,16 @@ SOURCES		:=	source \
 			third_party/rcheevos/src \
 			third_party/rcheevos/src/rapi \
 			third_party/rcheevos/src/rcheevos \
-			third_party/rcheevos/src/rhash
+			third_party/rcheevos/src/rhash \
+			third_party/quirc
 DATA		:=	data
 INCLUDES	:=	include \
 			third_party/rcheevos/include \
 			third_party/rcheevos/src \
 			third_party/prefix/include \
 			third_party/gpsp/libretro/libretro-common/include \
-			third_party/gpsp/libretro
+			third_party/gpsp/libretro \
+			third_party/quirc
 GRAPHICS	:=	gfx
 GFXBUILD	:=	$(BUILD)
 

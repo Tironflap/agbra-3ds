@@ -9,15 +9,19 @@
 #include "rc_consoles.h"
 #include "rc_error.h"
 
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define RA_MAX_LIST 256
 
 static rc_client_t* s_client = NULL;
 static rc_client_achievement_list_t* s_list = NULL;
 static const rc_client_achievement_t* s_flat[RA_MAX_LIST];
+static const char* s_flatBucket[RA_MAX_LIST];
 static int s_flatCount = 0;
 static uint32_t s_console = RC_CONSOLE_GAMEBOY_ADVANCE;
 
@@ -72,11 +76,50 @@ static void RC_CCONV ra_event(const rc_client_event_t* event, rc_client_t* clien
 	case RC_CLIENT_EVENT_LEADERBOARD_STARTED:
 		if (event->leaderboard) overlay_push("Leaderboard", event->leaderboard->title);
 		break;
+	case RC_CLIENT_EVENT_LEADERBOARD_FAILED:
+		overlay_push("Leaderboard", "Attempt failed");
+		break;
 	case RC_CLIENT_EVENT_LEADERBOARD_SUBMITTED:
 		if (event->leaderboard) overlay_push("Submitted", event->leaderboard->title);
 		break;
+	case RC_CLIENT_EVENT_LEADERBOARD_SCOREBOARD:
+		if (event->leaderboard_scoreboard) {
+			char line[96];
+			snprintf(line, sizeof(line), "#%" PRIu32 "  %s",
+				event->leaderboard_scoreboard->new_rank,
+				event->leaderboard_scoreboard->submitted_score);
+			overlay_push("Leaderboard", line);
+		}
+		break;
+	case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_SHOW:
+	case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_UPDATE:
+		if (event->leaderboard_tracker)
+			overlay_set_leaderboard(event->leaderboard_tracker->display);
+		break;
+	case RC_CLIENT_EVENT_LEADERBOARD_TRACKER_HIDE:
+		overlay_set_leaderboard(NULL);
+		break;
+	case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_SHOW:
+		if (event->achievement) overlay_set_challenge(event->achievement->title);
+		break;
+	case RC_CLIENT_EVENT_ACHIEVEMENT_CHALLENGE_INDICATOR_HIDE:
+		overlay_set_challenge(NULL);
+		break;
+	case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_SHOW:
+	case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_UPDATE:
+		if (event->achievement)
+			overlay_set_progress(event->achievement->title, event->achievement->measured_progress);
+		break;
+	case RC_CLIENT_EVENT_ACHIEVEMENT_PROGRESS_INDICATOR_HIDE:
+		overlay_set_progress(NULL, NULL);
+		break;
 	case RC_CLIENT_EVENT_RESET:
+		/* Enabling hardcore freezes the runtime until this reset lands.
+		   The game itself has to start over too. */
+		overlay_clear_trackers();
 		emu_reset();
+		rc_client_reset(client);
+		app_toast("Hardcore on — game reset");
 		break;
 	case RC_CLIENT_EVENT_SERVER_ERROR:
 		app_set_status("RA server error");
@@ -123,7 +166,7 @@ static void RC_CCONV load_cb(int result, const char* error_message, rc_client_t*
 	rc_client_get_user_game_summary(s_client, &sum);
 	if (game) {
 		app_set_status("%s  %u/%u", game->title, sum.num_unlocked_achievements, sum.num_core_achievements);
-		overlay_push(game->title, "RetroAchievements loaded");
+		overlay_push(game->title, g_app.hardcore ? "Hardcore" : "Casual");
 	}
 	ra_refresh_list();
 }
@@ -185,6 +228,11 @@ void ra_load_game(const char* path, const uint8_t* rom, size_t romSize) {
 	(void)rom;
 	(void)romSize;
 	if (!s_client || !path || !path[0]) return;
+	{
+		char core[48];
+		emu_core_agent(core, sizeof(core));
+		http_set_core(core);
+	}
 	rc_client_set_hardcore_enabled(s_client, g_app.hardcore ? 1 : 0);
 	rc_client_set_unofficial_enabled(s_client, g_app.unofficial ? 1 : 0);
 	/* Hash the file on the card. The in-memory copy is not the cart image
@@ -201,6 +249,8 @@ void ra_unload_game(void) {
 		s_list = NULL;
 	}
 	s_flatCount = 0;
+	overlay_clear_trackers();
+	http_set_core(NULL);
 	if (s_client) rc_client_unload_game(s_client);
 }
 
@@ -221,10 +271,17 @@ bool ra_hardcore(void) {
 }
 
 void ra_set_hardcore(bool on) {
+	int was = g_app.hardcore;
 	g_app.hardcore = on;
 	g_cfg.hardcore = on;
 	if (s_client) rc_client_set_hardcore_enabled(s_client, on ? 1 : 0);
 	config_save();
+	/* A loaded RetroAchievements set resets itself and asks for a console
+	 * reset. Before that set exists, the console still has to start over. */
+	if (on && !was && emu_loaded() && !ra_game_loaded()) {
+		emu_reset();
+		app_toast("Hardcore on — game reset");
+	}
 }
 
 const char* ra_user_name(void) {
@@ -271,11 +328,12 @@ void ra_refresh_list(void) {
 	if (!s_client) return;
 	s_list = rc_client_create_achievement_list(s_client,
 		RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE_AND_UNOFFICIAL,
-		RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+		RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_PROGRESS);
 	if (!s_list) return;
 	for (uint32_t b = 0; b < s_list->num_buckets && s_flatCount < RA_MAX_LIST; b++) {
 		const rc_client_achievement_bucket_t* bucket = &s_list->buckets[b];
 		for (uint32_t i = 0; i < bucket->num_achievements && s_flatCount < RA_MAX_LIST; i++) {
+			s_flatBucket[s_flatCount] = bucket->label ? bucket->label : "";
 			s_flat[s_flatCount++] = bucket->achievements[i];
 		}
 	}
@@ -313,4 +371,80 @@ bool ra_list_unlocked(int index) {
 int ra_list_points(int index) {
 	if (index < 0 || index >= s_flatCount || !s_flat[index]) return 0;
 	return (int)s_flat[index]->points;
+}
+
+const char* ra_list_bucket(int index) {
+	if (index < 0 || index >= s_flatCount) return "";
+	return s_flatBucket[index] ? s_flatBucket[index] : "";
+}
+
+const char* ra_list_kind(int index) {
+	if (index < 0 || index >= s_flatCount || !s_flat[index]) return "";
+	switch (s_flat[index]->type) {
+	case RC_CLIENT_ACHIEVEMENT_TYPE_MISSABLE: return "Missable";
+	case RC_CLIENT_ACHIEVEMENT_TYPE_PROGRESSION: return "Progression";
+	case RC_CLIENT_ACHIEVEMENT_TYPE_WIN: return "Win condition";
+	default: return "";
+	}
+}
+
+static int progress_path(const char* statePath, char* out, size_t outLen) {
+	int n;
+	if (!statePath || !statePath[0] || !out || outLen < 8) return 0;
+	n = snprintf(out, outLen, "%s.ra", statePath);
+	return n > 0 && (size_t)n < outLen;
+}
+
+void ra_save_progress(const char* statePath) {
+	char side[540];
+	size_t n;
+	uint8_t* buf;
+	int fd;
+	size_t off;
+	if (!s_client || !progress_path(statePath, side, sizeof(side))) return;
+	n = rc_client_progress_size(s_client);
+	if (!n || n > 256u * 1024u) return;
+	buf = malloc(n);
+	if (!buf) return;
+	if (rc_client_serialize_progress_sized(s_client, buf, n) != RC_OK) {
+		free(buf);
+		return;
+	}
+	fd = open(side, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (fd >= 0) {
+		off = 0;
+		while (off < n) {
+			ssize_t wr = write(fd, buf + off, n - off);
+			if (wr <= 0) break;
+			off += (size_t)wr;
+		}
+		close(fd);
+		if (off != n) unlink(side);
+	}
+	free(buf);
+}
+
+void ra_load_progress(const char* statePath) {
+	char side[540];
+	int fd;
+	off_t n;
+	uint8_t* buf;
+	if (!s_client || !progress_path(statePath, side, sizeof(side))) return;
+	fd = open(side, O_RDONLY);
+	if (fd < 0) return;
+	n = lseek(fd, 0, SEEK_END);
+	if (n <= 0 || n > 256 * 1024) {
+		close(fd);
+		return;
+	}
+	buf = malloc((size_t)n);
+	if (!buf) {
+		close(fd);
+		return;
+	}
+	lseek(fd, 0, SEEK_SET);
+	if (read(fd, buf, (size_t)n) == n)
+		rc_client_deserialize_progress_sized(s_client, buf, (size_t)n);
+	close(fd);
+	free(buf);
 }

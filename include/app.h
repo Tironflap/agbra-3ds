@@ -19,7 +19,7 @@
 #define AGBRA_CFG_PATH "sdmc:/3ds/agbra/config.ini"
 #define AGBRA_SAVES_DIR "sdmc:/3ds/agbra/saves"
 #define AGBRA_STATES_DIR "sdmc:/3ds/agbra/states"
-#define AGBRA_USER_AGENT "AGB-RA/1.0 (Nintendo 3DS)"
+#define AGBRA_USER_AGENT "AGB-RA/" AGBRA_VERSION " (Nintendo 3DS)"
 
 #define GBA_WIDTH 240
 #define GBA_HEIGHT 160

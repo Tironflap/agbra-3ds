@@ -114,6 +114,18 @@ static void blit_rect(const uint16_t* src, int sw, int sh, int stride,
 	}
 }
 
+void video_show_camera(const uint16_t* rgb, int width, int height) {
+	int sy[TOP_HEIGHT];
+	int i;
+	s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+	if (!s_top || !rgb || width != TOP_WIDTH || height != TOP_HEIGHT) return;
+	/* The camera's first row is the bottom of the view. */
+	for (i = 0; i < TOP_HEIGHT; i++) sy[i] = TOP_HEIGHT - 1 - i;
+	blit_rect(rgb, width, height, width, width, height, 0, 0, NULL, sy);
+	GSPGPU_FlushDataCache(s_top, TOP_WIDTH * TOP_HEIGHT * sizeof(uint16_t));
+	gfxScreenSwapBuffers(GFX_TOP, false);
+}
+
 void video_present(const uint16_t* pixels, int width, int height, int stride) {
 	s_top = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
 	if (!s_top) return;

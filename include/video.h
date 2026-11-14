@@ -5,6 +5,8 @@
 void video_init(void);
 void video_exit(void);
 void video_present(const uint16_t* pixels, int width, int height, int stride);
+/* Row-major RGB565, shown full-frame on the top screen. */
+void video_show_camera(const uint16_t* rgb, int width, int height);
 void video_overlay_text(int x, int y, const char* text, uint16_t color);
 void video_overlay_bar(int x, int y, int w, int h, uint16_t color);
 void video_flush(void);

@@ -5,10 +5,12 @@
 #include "fastgba.h"
 #include "fs.h"
 #include "guest.h"
+#include "ra.h"
 #include "video.h"
 
 #include <3ds.h>
 #include <mgba/core/core.h>
+#include <mgba/core/version.h>
 #include <mgba-util/audio-buffer.h>
 #include <mgba-util/vfs.h>
 #include "rc_consoles.h"
@@ -134,6 +136,49 @@ void emu_release_rom(void) {
 
 const char* emu_rom_path(void) {
 	return s_path;
+}
+
+static void copy_numeric_version(const char* in, char* out, size_t n) {
+	size_t j = 0;
+	int dots = 0;
+	if (!in) in = "";
+	if (*in == 'v' || *in == 'V') in++;
+	while (*in && j + 1 < n) {
+		if (*in >= '0' && *in <= '9') out[j++] = *in;
+		else if (*in == '.' && j > 0 && out[j - 1] != '.' && dots < 2) {
+			out[j++] = '.';
+			dots++;
+		} else {
+			break;
+		}
+		in++;
+	}
+	if (j && out[j - 1] == '.') j--;
+	out[j] = 0;
+	if (!out[0]) snprintf(out, n, "0.0.0");
+}
+
+void emu_core_agent(char* out, size_t outLen) {
+	char ver[24];
+	if (!out || !outLen) return;
+	out[0] = 0;
+	if (!s_loaded) return;
+	if (guest_kind() == GUEST_NES) {
+		snprintf(out, outLen, "fceumm/0.98.13");
+		return;
+	}
+	if (guest_kind() == GUEST_MINI) {
+		snprintf(out, outLen, "pokemini/0.60");
+		return;
+	}
+	if (s_fast) {
+		snprintf(out, outLen, "gpsp/1.1.0");
+		return;
+	}
+	if (s_core) {
+		copy_numeric_version(projectVersion, ver, sizeof(ver));
+		snprintf(out, outLen, "mgba/%s", ver);
+	}
 }
 
 void emu_unload(void) {
@@ -630,19 +675,22 @@ void emu_flush_save_soft(void) {
 }
 
 bool emu_save_state(int slot) {
-	if (g_app.hardcore) return false;
 	if (guest_kind()) {
 		char stem[256], path[512];
 		const char* tag = guest_kind() == GUEST_MINI ? "min" : "nes";
 		app_stem(s_path, stem, sizeof(stem));
 		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.%s.ss%d", stem, tag, slot);
-		return guest_save_state(path);
+		if (!guest_save_state(path)) return false;
+		ra_save_progress(path);
+		return true;
 	}
 	if (s_fast) {
 		char stem[256], path[512];
 		app_stem(s_path, stem, sizeof(stem));
 		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
-		return fastgba_save_state(path);
+		if (!fastgba_save_state(path)) return false;
+		ra_save_progress(path);
+		return true;
 	}
 	if (!s_core) return false;
 	char stem[256], path[512];
@@ -664,6 +712,7 @@ bool emu_save_state(int slot) {
 		if (p) vf->unmap(vf, p, n);
 	}
 	vf->close(vf);
+	if (ok) ra_save_progress(path);
 	return ok;
 }
 
@@ -674,13 +723,17 @@ bool emu_load_state(int slot) {
 		const char* tag = guest_kind() == GUEST_MINI ? "min" : "nes";
 		app_stem(s_path, stem, sizeof(stem));
 		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.%s.ss%d", stem, tag, slot);
-		return guest_load_state(path);
+		if (!guest_load_state(path)) return false;
+		ra_load_progress(path);
+		return true;
 	}
 	if (s_fast) {
 		char stem[256], path[512];
 		app_stem(s_path, stem, sizeof(stem));
 		snprintf(path, sizeof(path), AGBRA_STATES_DIR "/%s.ss%d", stem, slot);
-		return fastgba_load_state(path);
+		if (!fastgba_load_state(path)) return false;
+		ra_load_progress(path);
+		return true;
 	}
 	if (!s_core) return false;
 	char stem[256], path[512];
@@ -710,5 +763,6 @@ bool emu_load_state(int slot) {
 	if (!vf) return false;
 	bool ok = mCoreLoadStateNamed(s_core, vf, 0);
 	vf->close(vf);
+	if (ok) ra_load_progress(path);
 	return ok;
 }

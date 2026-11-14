@@ -21,6 +21,8 @@ typedef struct RommRow {
 
 /* url is the server root. secret is a password, or a client token that starts with rmm_. */
 void romm_login(const char* url, const char* user, const char* secret);
+/* Pairing QR ({origin}/pair?code=...), a raw rmm_ token, or a short code. */
+void romm_login_from_qr(const char* payload);
 int romm_ready(void);
 RommPhase romm_phase(void);
 void romm_load_platforms(void);

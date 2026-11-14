@@ -37,3 +37,6 @@ int emu_target_ms(void);
 const uint8_t* emu_rom_data(size_t* size);
 void emu_release_rom(void);
 const char* emu_rom_path(void);
+/* "gpsp/1.1.0", "mgba/0.10.3", "fceumm/0.98.13", or "pokemini/0.60".
+ * Empty when no core is loaded. */
+void emu_core_agent(char* out, size_t outLen);

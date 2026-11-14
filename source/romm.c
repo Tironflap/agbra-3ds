@@ -556,6 +556,217 @@ static void refresh_token(void) {
 	free(body);
 }
 
+static int query_value(const char* url, const char* key, char* out, size_t n) {
+	char pat[40];
+	const char* q;
+	const char* p;
+	size_t klen;
+	size_t j;
+	if (!url || !key || !out || n < 2) return 0;
+	snprintf(pat, sizeof(pat), "%s=", key);
+	klen = strlen(pat);
+	q = strchr(url, '?');
+	if (!q) return 0;
+	p = q + 1;
+	while (*p) {
+		if ((p == q + 1 || p[-1] == '&') && strncmp(p, pat, klen) == 0) {
+			p += klen;
+			j = 0;
+			while (*p && *p != '&' && *p != '#' && j + 1 < n) {
+				if (*p == '%' && p[1] && p[2]) {
+					int hi = -1;
+					int lo = -1;
+					char a = p[1];
+					char b = p[2];
+					if (a >= '0' && a <= '9') hi = a - '0';
+					else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
+					else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
+					if (b >= '0' && b <= '9') lo = b - '0';
+					else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
+					else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
+					if (hi >= 0 && lo >= 0) {
+						out[j++] = (char)((hi << 4) | lo);
+						p += 3;
+						continue;
+					}
+				}
+				out[j++] = *p == '+' ? ' ' : *p;
+				p++;
+			}
+			out[j] = 0;
+			return out[0] != 0;
+		}
+		p++;
+	}
+	return 0;
+}
+
+static int origin_of(const char* url, char* out, size_t n) {
+	const char* p;
+	const char* end;
+	const char* slash;
+	const char* query;
+	size_t len;
+	if (!url) return 0;
+	p = strstr(url, "://");
+	if (!p) return 0;
+	p += 3;
+	end = url + strlen(url);
+	slash = strchr(p, '/');
+	query = strchr(p, '?');
+	if (slash && slash < end) end = slash;
+	if (query && query < end) end = query;
+	len = (size_t)(end - url);
+	if (len < 8 || len + 1 > n) return 0;
+	memcpy(out, url, len);
+	out[len] = 0;
+	return 1;
+}
+
+static int code_ok(const char* s) {
+	int n = 0;
+	if (!s) return 0;
+	for (; *s; s++) {
+		char c = *s;
+		if (c == '-') continue;
+		if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+			return 0;
+		n++;
+	}
+	return n >= 4 && n <= 16;
+}
+
+static void RC_CCONV on_exchange(const rc_api_server_response_t* resp, void* ud) {
+	int status = resp ? resp->http_status_code : 0;
+	const char* body = resp ? resp->body : NULL;
+	size_t len = resp ? resp->body_length : 0;
+	char token[96];
+	const char* root;
+	const char* end;
+	(void)ud;
+	token[0] = 0;
+	if (status < 200 || status >= 300 || !body) {
+		s_busy = 0;
+		s_phase = ROMM_ERROR;
+		set_http_message(status, body, len);
+		if (status == 404)
+			snprintf(s_message, sizeof(s_message), "Pairing code expired. Make a new QR.");
+		return;
+	}
+	end = body + len;
+	root = body;
+	while (root < end && *root != '{') root++;
+	if (root < end) take_string(root, end, "raw_token", token, sizeof(token));
+	if (strncmp(token, "rmm_", 4) != 0) {
+		s_busy = 0;
+		s_phase = ROMM_ERROR;
+		snprintf(s_message, sizeof(s_message), "RomM did not return a token");
+		return;
+	}
+	strncpy(g_cfg.romm_token, token, sizeof(g_cfg.romm_token) - 1);
+	g_cfg.romm_token[sizeof(g_cfg.romm_token) - 1] = 0;
+	g_cfg.romm_refresh[0] = 0;
+	config_save();
+	fetch_platforms();
+}
+
+static void exchange_code(const char* origin, const char* code) {
+	char clean[20];
+	char body[80];
+	char url[256];
+	size_t j = 0;
+	normalize_base(origin, g_cfg.romm_url, sizeof(g_cfg.romm_url));
+	for (size_t i = 0; code[i] && j + 1 < sizeof(clean); i++) {
+		char c = code[i];
+		if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') || c == '-')
+			clean[j++] = c;
+	}
+	clean[j] = 0;
+	if (!code_ok(clean)) {
+		s_phase = ROMM_ERROR;
+		snprintf(s_message, sizeof(s_message), "That pairing code is not valid.");
+		return;
+	}
+	snprintf(body, sizeof(body), "{\"code\":\"%s\"}", clean);
+	snprintf(url, sizeof(url), "%s/api/client-tokens/exchange", g_cfg.romm_url);
+	s_busy = 1;
+	s_phase = ROMM_BUSY;
+	s_want = 1;
+	s_retryAuth = 0;
+	snprintf(s_message, sizeof(s_message), "Pairing with RomM...");
+	config_save();
+	http_request(url, body, "application/json", NULL, NULL, on_exchange, NULL);
+}
+
+void romm_login_from_qr(const char* payload) {
+	char text[768];
+	char origin[192];
+	char value[96];
+	char* token;
+	size_t n;
+	if (!payload || !payload[0]) return;
+	while (*payload == ' ' || *payload == '\n' || *payload == '\r' || *payload == '\t') payload++;
+	snprintf(text, sizeof(text), "%s", payload);
+	n = strlen(text);
+	while (n && (text[n - 1] == ' ' || text[n - 1] == '\n' || text[n - 1] == '\r')) text[--n] = 0;
+
+	token = strstr(text, "rmm_");
+	if (token && (token == text || token[-1] == '|' || token[-1] == '\n' ||
+		token[-1] == ' ' || token[-1] == '\t' || token[-1] == '=')) {
+		if (token != text) {
+			char sep = token[-1];
+			token[-1] = 0;
+			if (sep != '=' && text[0])
+				normalize_base(text, g_cfg.romm_url, sizeof(g_cfg.romm_url));
+		}
+		if (!g_cfg.romm_url[0] && !origin_of(text, origin, sizeof(origin))) {
+			s_phase = ROMM_NEED_LOGIN;
+			snprintf(s_message, sizeof(s_message), "QR had the token, not the server. Scan the pairing QR.");
+			return;
+		}
+		if (!g_cfg.romm_url[0]) normalize_base(origin, g_cfg.romm_url, sizeof(g_cfg.romm_url));
+		romm_login(g_cfg.romm_url, g_cfg.romm_user, token);
+		return;
+	}
+
+	if (strstr(text, "://")) {
+		if (!origin_of(text, origin, sizeof(origin))) {
+			s_phase = ROMM_ERROR;
+			snprintf(s_message, sizeof(s_message), "Could not read the server from that QR.");
+			return;
+		}
+		if ((query_value(text, "token", value, sizeof(value)) ||
+			query_value(text, "access_token", value, sizeof(value))) &&
+			strncmp(value, "rmm_", 4) == 0) {
+			normalize_base(origin, g_cfg.romm_url, sizeof(g_cfg.romm_url));
+			romm_login(g_cfg.romm_url, g_cfg.romm_user, value);
+			return;
+		}
+		if (query_value(text, "code", value, sizeof(value)) ||
+			query_value(text, "user_code", value, sizeof(value))) {
+			exchange_code(origin, value);
+			return;
+		}
+		s_phase = ROMM_ERROR;
+		snprintf(s_message, sizeof(s_message), "That QR has no pairing code.");
+		return;
+	}
+
+	if (code_ok(text)) {
+		if (!g_cfg.romm_url[0]) {
+			s_phase = ROMM_NEED_LOGIN;
+			snprintf(s_message, sizeof(s_message), "Scan the pairing QR, which includes the server.");
+			return;
+		}
+		exchange_code(g_cfg.romm_url, text);
+		return;
+	}
+
+	s_phase = ROMM_ERROR;
+	snprintf(s_message, sizeof(s_message), "QR was not a RomM pairing code.");
+}
+
 void romm_login(const char* url, const char* user, const char* secret) {
 	if (!url || !url[0] || !secret || !secret[0]) return;
 	normalize_base(url, g_cfg.romm_url, sizeof(g_cfg.romm_url));

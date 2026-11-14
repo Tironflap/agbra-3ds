@@ -32,4 +32,10 @@ const char* ra_list_progress(int index);
 bool ra_list_unlocked(int index);
 int ra_list_points(int index);
 void ra_refresh_list(void);
+const char* ra_list_bucket(int index);
+const char* ra_list_kind(int index);
+/* Hit counts travel with the save state. Hardcore may write them and
+ * must not read them back. */
+void ra_save_progress(const char* statePath);
+void ra_load_progress(const char* statePath);
 void ra_poll_http(void);

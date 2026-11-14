@@ -196,11 +196,11 @@ static void tick_play(u32 down, u32 held) {
 		return;
 	}
 
+	if (down & KEY_X) {
+		if (emu_save_state(1)) app_toast("State saved (slot 1)");
+		else app_toast("Save state failed");
+	}
 	if (!g_app.hardcore) {
-		if (down & KEY_X) {
-			if (emu_save_state(1)) app_toast("State saved (slot 1)");
-			else app_toast("Save state failed");
-		}
 		if (down & KEY_Y) {
 			if (emu_load_state(1)) app_toast("State loaded (slot 1)");
 			else app_toast("Load state failed");
@@ -208,6 +208,7 @@ static void tick_play(u32 down, u32 held) {
 		/* ZL is New 3DS only. The touch screen is the old-3DS turbo. */
 		g_app.fastForward = (held & (KEY_ZL | KEY_TOUCH)) != 0;
 	} else {
+		if (down & KEY_Y) app_toast("Load is locked in hardcore");
 		g_app.fastForward = false;
 	}
 
@@ -347,6 +348,7 @@ int main(int argc, char** argv) {
 				audio_clear();
 				video_wipe();
 				ui_show_playing();
+				app_toast(g_app.hardcore ? "Hardcore mode" : "Casual mode");
 			} else if (step == 0) {
 				g_app.loading = false;
 			}

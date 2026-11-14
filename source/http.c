@@ -1,6 +1,5 @@
 #include "http.h"
 #include "app.h"
-#include "rc_version.h"
 
 #include <3ds.h>
 #include <malloc.h>
@@ -32,6 +31,8 @@
 #define HTTP_BODY_MAX (512 * 1024)
 #define SOC_ALIGN 0x1000
 #define SOC_BUFFERSIZE 0x80000
+#define OFFLINE_MAX 32
+#define OFFLINE_PATH AGBRA_DIR "/offline.queue"
 
 typedef struct HttpJob {
 	char url[1024];
@@ -39,6 +40,7 @@ typedef struct HttpJob {
 	char contentType[96];
 	char auth[1100];
 	char savePath[512];
+	char offlineKey[16];
 	rc_client_server_callback_t callback;
 	void* callback_data;
 	char* body;
@@ -59,6 +61,39 @@ static u32* s_soc;
 static int s_net;
 static Thread s_thread;
 static volatile int s_run;
+static char s_ua[180];
+static char s_coreClause[48];
+
+static void build_user_agent(void) {
+	char ver[40];
+	char osver[24];
+	osver[0] = 0;
+	ver[0] = 0;
+	if (R_SUCCEEDED(osGetSystemVersionDataString(NULL, NULL, ver, sizeof(ver))) && ver[0]) {
+		size_t n = strlen(ver);
+		if (n && ver[n - 1] >= 'A' && ver[n - 1] <= 'Z') ver[n - 1] = 0;
+		snprintf(osver, sizeof(osver), "%s", ver);
+	}
+	if (osver[0] && s_coreClause[0])
+		snprintf(s_ua, sizeof(s_ua), "AGB-RA/%s (Nintendo 3DS %s) %s", AGBRA_VERSION, osver, s_coreClause);
+	else if (osver[0])
+		snprintf(s_ua, sizeof(s_ua), "AGB-RA/%s (Nintendo 3DS %s)", AGBRA_VERSION, osver);
+	else if (s_coreClause[0])
+		snprintf(s_ua, sizeof(s_ua), "AGB-RA/%s (Nintendo 3DS) %s", AGBRA_VERSION, s_coreClause);
+	else
+		snprintf(s_ua, sizeof(s_ua), "%s", AGBRA_USER_AGENT);
+}
+
+void http_set_core(const char* coreClause) {
+	LightLock_Lock(&s_lock);
+	s_coreClause[0] = 0;
+	if (coreClause && coreClause[0]) {
+		strncpy(s_coreClause, coreClause, sizeof(s_coreClause) - 1);
+		s_coreClause[sizeof(s_coreClause) - 1] = 0;
+	}
+	build_user_agent();
+	LightLock_Unlock(&s_lock);
+}
 
 static int parse_url(const char* url, char* host, size_t hostLen, char* path, size_t pathLen, int* https, int* port) {
 	const char* p = url;
@@ -205,6 +240,11 @@ static int http_download_hop(HttpJob* job, int hop) {
 
 	const char* ct = job->contentType[0] ? job->contentType : "application/x-www-form-urlencoded";
 	size_t postLen = job->post ? strlen(job->post) : 0;
+	char ua[180];
+	LightLock_Lock(&s_lock);
+	strncpy(ua, s_ua[0] ? s_ua : AGBRA_USER_AGENT, sizeof(ua) - 1);
+	ua[sizeof(ua) - 1] = 0;
+	LightLock_Unlock(&s_lock);
 	char hostHeader[160];
 	if ((https && portNum == 443) || (!https && portNum == 80))
 		snprintf(hostHeader, sizeof(hostHeader), "%s", host);
@@ -214,10 +254,10 @@ static int http_download_hop(HttpJob* job, int hop) {
 	int hlen = snprintf(header, sizeof(header),
 		"%s %s HTTP/1.0\r\n"
 		"Host: %s\r\n"
-		"User-Agent: AGB-RA/1.0 rcheevos/" RCHEEVOS_VERSION_STRING "\r\n"
+		"User-Agent: %s\r\n"
 		"Accept: */*\r\n"
 		"Connection: close\r\n",
-		job->post ? "POST" : "GET", path, hostHeader);
+		job->post ? "POST" : "GET", path, hostHeader, ua);
 	if (hlen < 0 || (size_t)hlen >= sizeof(header)) goto fail;
 	if (job->post) {
 		int extra = snprintf(header + hlen, sizeof(header) - (size_t)hlen,
@@ -468,6 +508,7 @@ static void http_thread(void* arg) {
 bool http_init(void) {
 	memset(s_jobs, 0, sizeof(s_jobs));
 	LightLock_Init(&s_lock);
+	build_user_agent();
 	acInit();
 	s_soc = (u32*)memalign(SOC_ALIGN, SOC_BUFFERSIZE);
 	if (!s_soc) return false;
@@ -567,6 +608,172 @@ void http_stream_progress(uint32_t* got, uint32_t* total, int* active) {
 	if (active) *active = s_progOn;
 }
 
+typedef struct {
+	char key[16];
+	char url[192];
+	char* post;
+} OfflineSlot;
+
+static OfflineSlot s_off[OFFLINE_MAX];
+static int s_offCount = 0;
+static int s_offReady = 0;
+static int s_replay = 0;
+static u64 s_replayAt = 0;
+
+static int offline_kind(const char* post) {
+	if (!post) return 0;
+	if (strstr(post, "r=awardachievement")) return 1;
+	if (strstr(post, "r=submitlbentry")) return 2;
+	return 0;
+}
+
+static int param_id(const char* post, const char* key, uint32_t* out) {
+	size_t klen = strlen(key);
+	const char* p = post;
+	while (p && (p = strstr(p, key))) {
+		if ((p == post || p[-1] == '&') && p[klen] == '=') {
+			*out = (uint32_t)strtoul(p + klen + 1, NULL, 10);
+			return 1;
+		}
+		p += klen;
+	}
+	return 0;
+}
+
+static void offline_save(void) {
+	FILE* f = fopen(OFFLINE_PATH, "w");
+	if (!f) return;
+	for (int i = 0; i < s_offCount; i++) {
+		if (!s_off[i].post || !s_off[i].key[0]) continue;
+		fprintf(f, "%s\t%s\t%s\n", s_off[i].key, s_off[i].url, s_off[i].post);
+	}
+	fflush(f);
+	fsync(fileno(f));
+	fclose(f);
+}
+
+static void offline_load(void) {
+	char line[2048];
+	FILE* f;
+	if (s_offReady) return;
+	s_offReady = 1;
+	f = fopen(OFFLINE_PATH, "r");
+	if (!f) return;
+	while (s_offCount < OFFLINE_MAX && fgets(line, sizeof(line), f)) {
+		char* tab1 = strchr(line, '\t');
+		char* tab2;
+		char* post;
+		size_t plen;
+		OfflineSlot* slot;
+		if (!tab1) continue;
+		tab2 = strchr(tab1 + 1, '\t');
+		if (!tab2) continue;
+		*tab1 = 0;
+		*tab2 = 0;
+		post = tab2 + 1;
+		plen = strlen(post);
+		while (plen && (post[plen - 1] == '\n' || post[plen - 1] == '\r')) post[--plen] = 0;
+		if (!line[0] || !post[0]) continue;
+		slot = &s_off[s_offCount];
+		memset(slot, 0, sizeof(*slot));
+		snprintf(slot->key, sizeof(slot->key), "%s", line);
+		strncpy(slot->url, tab1 + 1, sizeof(slot->url) - 1);
+		slot->post = strdup(post);
+		if (slot->post) s_offCount++;
+	}
+	fclose(f);
+}
+
+static void offline_upsert(const char* key, const char* url, const char* post) {
+	int i;
+	offline_load();
+	if (!key || !key[0] || !url || !post) return;
+	for (i = 0; i < s_offCount; i++) {
+		if (strcmp(s_off[i].key, key) != 0) continue;
+		free(s_off[i].post);
+		s_off[i].post = strdup(post);
+		strncpy(s_off[i].url, url, sizeof(s_off[i].url) - 1);
+		s_off[i].url[sizeof(s_off[i].url) - 1] = 0;
+		offline_save();
+		return;
+	}
+	if (s_offCount >= OFFLINE_MAX) return;
+	memset(&s_off[s_offCount], 0, sizeof(s_off[0]));
+	snprintf(s_off[s_offCount].key, sizeof(s_off[0].key), "%s", key);
+	strncpy(s_off[s_offCount].url, url, sizeof(s_off[0].url) - 1);
+	s_off[s_offCount].post = strdup(post);
+	if (!s_off[s_offCount].post) return;
+	s_offCount++;
+	offline_save();
+}
+
+static void offline_remove(const char* key) {
+	int i;
+	offline_load();
+	if (!key || !key[0]) return;
+	for (i = 0; i < s_offCount; i++) {
+		if (strcmp(s_off[i].key, key) != 0) continue;
+		free(s_off[i].post);
+		s_off[i] = s_off[s_offCount - 1];
+		memset(&s_off[s_offCount - 1], 0, sizeof(s_off[0]));
+		s_offCount--;
+		offline_save();
+		return;
+	}
+}
+
+static void offline_note(HttpJob* job) {
+	int kind;
+	uint32_t id = 0;
+	char key[16];
+	int ok;
+	if (!job) return;
+	ok = job->status >= 200 && job->status < 300;
+	if (job->offlineKey[0]) {
+		if (ok) offline_remove(job->offlineKey);
+		return;
+	}
+	kind = offline_kind(job->post);
+	if (!kind || !job->url[0] || !job->post) return;
+	if (kind == 1) {
+		if (!param_id(job->post, "a", &id)) return;
+	} else if (!param_id(job->post, "i", &id)) {
+		return;
+	}
+	snprintf(key, sizeof(key), "%c%u", kind == 1 ? 'A' : 'L', id);
+	if (ok) offline_remove(key);
+	else offline_upsert(key, job->url, job->post);
+}
+
+static void offline_pump(void) {
+	int busy = 0;
+	int slot = -1;
+	if (s_replay) return;
+	if (s_replayAt && osGetTime() < s_replayAt) return;
+	offline_load();
+	if (s_offCount <= 0 || !s_off[0].post || !s_off[0].url[0]) return;
+	LightLock_Lock(&s_lock);
+	for (int i = 0; i < HTTP_MAX_JOBS; i++) {
+		if (s_jobs[i].inUse) busy = 1;
+		else if (slot < 0) slot = i;
+	}
+	if (!busy && slot >= 0) {
+		HttpJob* job = &s_jobs[slot];
+		memset(job, 0, sizeof(*job));
+		job->inUse = 1;
+		strncpy(job->url, s_off[0].url, sizeof(job->url) - 1);
+		job->post = strdup(s_off[0].post);
+		strncpy(job->contentType, "application/x-www-form-urlencoded", sizeof(job->contentType) - 1);
+		snprintf(job->offlineKey, sizeof(job->offlineKey), "%s", s_off[0].key);
+		if (!job->post) {
+			memset(job, 0, sizeof(*job));
+			slot = -1;
+		}
+	}
+	LightLock_Unlock(&s_lock);
+	if (!busy && slot >= 0) s_replay = 1;
+}
+
 void http_poll(void) {
 	HttpJob done[HTTP_MAX_JOBS];
 	int nDone = 0;
@@ -601,6 +808,12 @@ void http_poll(void) {
 	for (int i = 0; i < nDone; i++) {
 		HttpJob* job = &done[i];
 		rc_api_server_response_t resp;
+		int ok = job->status >= 200 && job->status < 300;
+		if (job->offlineKey[0]) {
+			s_replay = 0;
+			s_replayAt = ok ? 0 : osGetTime() + 5000;
+		}
+		offline_note(job);
 		memset(&resp, 0, sizeof(resp));
 		resp.body = job->body;
 		resp.body_length = job->bodyLen;
@@ -609,4 +822,5 @@ void http_poll(void) {
 		free(job->post);
 		free(job->body);
 	}
+	offline_pump();
 }

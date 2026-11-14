@@ -16,3 +16,6 @@ void http_request(const char* url, const char* post, const char* contentType,
 	rc_client_server_callback_t callback, void* callback_data);
 void http_stream_progress(uint32_t* got, uint32_t* total, int* active);
 void http_poll(void);
+/* coreClause is "gpsp/1.1.0" or empty. It is the third segment of the
+ * RetroAchievements user agent. */
+void http_set_core(const char* coreClause);

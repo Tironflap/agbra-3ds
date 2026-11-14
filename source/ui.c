@@ -5,6 +5,7 @@
 #include "emu.h"
 #include "guest.h"
 #include "fs.h"
+#include "qr.h"
 #include "ra.h"
 #include "romm.h"
 #include "video.h"
@@ -118,7 +119,7 @@ static void header(void) {
 	if (ra_logged_in()) {
 		printf("RA  \x1b[32m%s\x1b[0m  %" PRIu32 " pts  %s\n",
 			ra_user_name(), ra_user_score(),
-			g_app.hardcore ? "HARDCORE" : "softcore");
+			g_app.hardcore ? "HARDCORE" : "Casual");
 	} else {
 		printf("RA  \x1b[31mnot signed in\x1b[0m\n");
 	}
@@ -226,6 +227,14 @@ static void draw_cheevos(void) {
 		}
 		printf("--------------------------------\n");
 		clip_line(ra_list_title(g_app.cheevoIndex), 38);
+		{
+			const char* bucket = ra_list_bucket(g_app.cheevoIndex);
+			const char* kind = ra_list_kind(g_app.cheevoIndex);
+			if ((bucket && bucket[0]) || (kind && kind[0]))
+				printf("%s%s%s\n", bucket ? bucket : "",
+					(bucket && bucket[0] && kind && kind[0]) ? "  " : "",
+					kind ? kind : "");
+		}
 		wrap_text(ra_list_description(g_app.cheevoIndex), 38, 3);
 		float rarity = ra_list_rarity(g_app.cheevoIndex);
 		if (rarity >= 0.f)
@@ -272,7 +281,7 @@ static void draw_playing(void) {
 	if (emu_guest() == GUEST_MINI)
 		printf("R is C    L shakes    Select power\n");
 	if (!g_app.hardcore) printf("X save  Y load  ZL or touch turbo\n");
-	else printf("Hardcore: states and turbo locked\n");
+	else printf("X save  Y load locked  turbo off\n");
 	footer_status();
 }
 
@@ -316,7 +325,7 @@ static void draw_romm_list(int games) {
 		if (romm_progress(prog, sizeof(prog))) printf("%s\n", prog);
 		else printf("Contacting RomM...\n");
 	} else if (romm_phase() == ROMM_NEED_LOGIN) {
-		printf("Sign in with X.\nUse a password or an rmm_ token.\n");
+		printf("Y scans the pairing QR.\nX types a password instead.\n");
 	} else if (n == 0) {
 		printf("%.38s\n", romm_message()[0] ? romm_message() : "Nothing to show.");
 	} else {
@@ -334,7 +343,7 @@ static void draw_romm_list(int games) {
 	if (romm_message()[0] && n > 0) printf("%.38s\n", romm_message());
 	footer_status();
 	if (games) printf("\nA save  Y replace  L/R page  B back");
-	else printf("\nA open  X sign in  B back");
+	else printf("\nA open  X type  Y scan QR  B back");
 }
 
 static int prompt_romm_login(void) {
@@ -407,6 +416,11 @@ static void handle_romm(u32 down, int games) {
 	if (!romm_busy()) {
 		if (down & KEY_UP && s_pick > 0) s_pick--;
 		if (down & KEY_DOWN && s_pick + 1 < n) s_pick++;
+	}
+	if (!games && (down & KEY_Y) && !romm_busy()) {
+		char text[768];
+		if (qr_scan(text, sizeof(text)) == 1) romm_login_from_qr(text);
+		return;
 	}
 	if (!games && (down & KEY_X)) {
 		if (!prompt_romm_login()) return;

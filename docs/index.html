@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGB-RA RomM code</title>
+<style>
+  body { font: 17px/1.45 system-ui, sans-serif; max-width: 26rem; margin: 2rem auto; padding: 0 1rem 2rem; color: #1c1915; background: #f4f0e6; }
+  h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
+  label { display: block; margin-top: 1rem; font-weight: 650; }
+  input { width: 100%; box-sizing: border-box; font: inherit; padding: 0.55rem 0.6rem; border: 1px solid #c8bfae; border-radius: 6px; background: #fff; }
+  button { margin-top: 1rem; font: inherit; padding: 0.55rem 1rem; border: 0; border-radius: 6px; background: #2c4a3e; color: #fff; }
+  #out { margin-top: 1.4rem; }
+  #out img { width: min(100%, 320px); height: auto; image-rendering: pixelated; background: #fff; padding: 12px; border-radius: 8px; }
+  .note { color: #5c564c; font-size: 0.92rem; }
+  .err { color: #8c2f2f; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>AGB-RA RomM code</h1>
+<p class="note">Type the RomM address and the <code>rmm_</code> token. The QR is drawn here. Nothing is sent anywhere.</p>
+<form id="form">
+  <label for="host">Address</label>
+  <input id="host" autocomplete="off" placeholder="192.168.1.10:8080" required>
+  <label for="token">Token</label>
+  <input id="token" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="rmm_…" required>
+  <button type="submit">Show QR</button>
+</form>
+<p id="msg" class="err"></p>
+<div id="out"></div>
+<p class="note">On the 3DS, open RomM and press Y. Point an outer camera at this code. B cancels.</p>
+<script src="qrcode.js"></script>
+<script>
+(function () {
+  var form = document.getElementById("form");
+  var msg = document.getElementById("msg");
+  var out = document.getElementById("out");
+
+  function server(raw) {
+    var s = raw.trim().replace(/\/+$/, "");
+    if (!s) throw new Error("Enter the RomM address.");
+    if (!/^https?:\/\//i.test(s)) s = "http://" + s;
+    if (s.indexOf("|") !== -1) throw new Error("The address cannot contain |.");
+    return s;
+  }
+
+  form.addEventListener("submit", function (ev) {
+    var host, token, payload, qr;
+    ev.preventDefault();
+    msg.textContent = "";
+    out.innerHTML = "";
+    try {
+      host = server(document.getElementById("host").value);
+      token = document.getElementById("token").value.trim();
+      if (token.indexOf("rmm_") !== 0) throw new Error("The token should start with rmm_.");
+      if (token.length > 200) throw new Error("That token is too long.");
+      payload = host + "|" + token;
+      qr = qrcode(0, "M");
+      qr.addData(payload);
+      qr.make();
+      out.innerHTML = qr.createImgTag(6, 4);
+    } catch (err) {
+      msg.textContent = err && err.message ? err.message : "Could not draw the code.";
+    }
+  });
+})();
+</script>
+</body>
+</html>

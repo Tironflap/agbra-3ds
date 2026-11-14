@@ -85,15 +85,18 @@ Config (RA token, hardcore, scale) in `sdmc:/3ds/agbra/config.ini`.
 | A B Start Select D-pad L R | same |
 | Circle Pad | D-pad |
 | L + R + Down | pause menu |
-| X / Y | save / load state (softcore only) |
-| ZL | fast-forward (softcore, New 3DS) |
+| X | save state (either mode) |
+| Y | load state (casual only; hardcore refuses) |
+| ZL or touch | fast-forward (casual only; New 3DS has ZL) |
 | X on ROM list | RetroAchievements login (software keyboard) |
 | Y on ROM list | rescan SD |
 | L on ROM list | download from a RomM server onto the SD card |
 | R, L, Select in Pokemon Mini | C, shake, power |
 | Up / Down on an achievement | description, and the percent of players who earned it |
 
-Hardcore mode disables save states and turbo, matching RetroAchievements rules.
+Hardcore is the default. The bottom screen shows which mode is active, and starting a game says so again. Hardcore locks save-state loads, turbo, cheats, rewind, and slowdown. Saving a state is still allowed, and the achievement hit counts are written next to that state, but the state cannot be loaded while hardcore is on. Turning hardcore on during a game resets it. Turning it off does not. Unlocks that never reach the server are kept in `sdmc:/3ds/agbra/offline.queue` and sent on a later launch.
+
+RetroAchievements sees this client as `AGB-RA/1.0.0 (Nintendo 3DS <system>) <core>/<version>`.
 
 On the achievement list, the highlighted row shows its description and how
 many players have earned it (the RetroAchievements rarity percent).
@@ -108,8 +111,11 @@ The sign-in asks for the server URL (`http://192.168.1.10:8080`), your
 username, and either the password or a client API token that starts with
 `rmm_`. The password is not stored. The token is saved in `config.ini`,
 same as the RetroAchievements token. Create a long-lived token in RomM
-with access to read platforms and ROMs. Y on a game replaces a file that
-is already on the card.
+with access to read platforms and ROMs. Y on the RomM screen reads a QR
+with an outer camera. The pairing QR from RomM works, and so does a code
+made at <https://tironflap.github.io/agbra-3ds/> from the server address
+and the `rmm_` token. That page draws the code in the browser and does not
+upload either value. Y on a game replaces a file that is already on the card.
 
 ## Architecture
 
