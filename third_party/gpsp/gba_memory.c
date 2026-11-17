@@ -207,6 +207,7 @@ static const u32 prescale_table[] = { 0, 6, 8, 10 };
 void sound_frequency_changed(void)
 {
    u32 i;
+   sound_prepare_output_rate();
    u16 snd4 = read_ioreg(REG_SOUND4CNT_H);
 
    gbc_sound_channel[0].frequency_step = psg_tone_step(gbc_sound_channel[0].rate);

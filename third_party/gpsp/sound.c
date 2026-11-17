@@ -598,15 +598,22 @@ void reset_sound(void)
   }
 }
 
+void sound_prepare_output_rate(void)
+{
+  /* 256 / sound_frequency in 16.16. At 65536 Hz that is 256. */
+  gbc_sound_tick_step = sound_frequency
+    ? (fixed16_16)((256ull << 16) / sound_frequency)
+    : (fixed16_16)256u;
+}
+
 void init_sound()
 {
-  /* 256 / sound_frequency in 16.16 == 256 (sound_frequency == 2^16). */
-  gbc_sound_tick_step = (fixed16_16)256u;
-
   init_noise_table(noise_table15, 32767, 14);
   init_noise_table(noise_table7, 127, 6);
 
   reset_sound();
+  sound_prepare_output_rate();
+  sound_frequency_changed();
 }
 
 

@@ -346,6 +346,7 @@ int main(int argc, char** argv) {
 				g_app.screen = APP_PLAYING;
 				g_app.raDelay = ra_logged_in() ? 90 : 0;
 				audio_clear();
+				if (!audio_ready()) app_toast("No sound. Dump dspfirm.cdc with DSP1.");
 				video_wipe();
 				ui_show_playing();
 				app_toast(g_app.hardcore ? "Hardcore mode" : "Casual mode");

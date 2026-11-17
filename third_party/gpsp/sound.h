@@ -59,6 +59,7 @@ static INLINE fixed16_16 psg_noise_step(u32 dividing_ratio, u32 freq_shift)
  * gba_memory.c since it needs timer state). Call on an output-rate change
  * and after loading a savestate. */
 void sound_frequency_changed(void);
+void sound_prepare_output_rate(void);
 
 /* Drop pending ring contents and realign producers/consumer (rate change). */
 void sound_flush_ring(void);
